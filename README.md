@@ -228,12 +228,12 @@ Run the demo to see GrayGEMS in action:
 
 ```bash
 cd demo
-python start_demo.py
+python start_demo_server.py
 ```
 
 Then test it with:
 
 ```bash
-python test_demo.py
+python run_demo_client.py
 ```
 
