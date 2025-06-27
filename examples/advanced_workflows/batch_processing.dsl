@@ -2,7 +2,7 @@
 # This workflow demonstrates loops and parallel processing of multiple files
 
 # Define variables
-var input_files = ${input_files}
+var input_files = "${input_files}"
 var output_dir = "${output_dir}"
 var batch_size = "${batch_size}"
 

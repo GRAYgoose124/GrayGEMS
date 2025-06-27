@@ -45,176 +45,83 @@ class DSLStep:
 
 
 class WorkflowDSL:
-    """DSL parser and compiler for workflow definitions"""
+    """DSL parser for workflow definitions"""
 
     def __init__(self):
         self.step_counter = 0
-        self.variables = {}
-
-    def parse_workflow(self, dsl_code: str) -> Dict[str, Any]:
-        """
-        Parse DSL code and return a compiled workflow definition
-
-        Example DSL:
-        ```
-        # Define variables
-        var input_file = "data.csv"
-        var output_dir = "results"
-
-        # Service calls
-        step validate_data: file_utils.validate(file=input_file)
-        step process_data: data_processor.transform(input=input_file, output=output_dir)
-
-        # Conditions
-        if validate_data.success:
-            step backup: file_utils.copy(source=input_file, target="backup/")
-            step analyze: data_processor.analyze(input=input_file)
-        else:
-            step fix_data: data_processor.clean(input=input_file)
-
-        # Parallel execution
-        parallel:
-            step report1: text_processor.generate_report(data=analyze.result)
-            step report2: text_processor.generate_summary(data=analyze.result)
-
-        # Loops
-        for item in process_data.items:
-            step process_item: data_processor.process_single(item=item)
-        ```
-        """
-        lines = [
-            line.strip()
-            for line in dsl_code.split("\n")
-            if line.strip() and not line.startswith("#")
-        ]
-
-        workflow = {
-            "steps": {},
-            "variables": {},
-            "metadata": {"source": dsl_code, "compiled_at": "2024-01-01T00:00:00Z"},
-        }
-
-        current_context = "root"
-        context_stack = []
-
-        for line in lines:
-            if line.startswith("var "):
-                # Variable declaration
-                var_name, var_value = self._parse_variable(line)
-                workflow["variables"][var_name] = var_value
-
-            elif line.startswith("step "):
-                # Service step
-                step_id, step_config = self._parse_service_step(line)
-                workflow["steps"][step_id] = step_config
-
-            elif line.startswith("if "):
-                # Condition block
-                condition, condition_steps = self._parse_condition(
-                    lines, lines.index(line)
-                )
-                workflow["steps"].update(condition_steps)
-
-            elif line.startswith("parallel:"):
-                # Parallel block
-                parallel_steps = self._parse_parallel_block(lines, lines.index(line))
-                workflow["steps"].update(parallel_steps)
-
-            elif line.startswith("for "):
-                # Loop block
-                loop_steps = self._parse_loop_block(lines, lines.index(line))
-                workflow["steps"].update(loop_steps)
-
-        return workflow
+        self.loop_counter = 0
+        self.condition_counter = 0
+        self.parallel_counter = 0
+        self.parsed_blocks = {}  # Track parsed blocks to avoid duplicates
 
     def _parse_variable(self, line: str) -> Tuple[str, Any]:
-        """Parse variable declaration: var name = value"""
-        match = re.match(r"var\s+(\w+)\s*=\s*(.+)", line)
-        if not match:
+        """Parse a variable declaration"""
+        # Remove 'var ' prefix and split on '='
+        var_part = line[4:].strip()
+        if '=' not in var_part:
             raise ValueError(f"Invalid variable declaration: {line}")
+        
+        var_name, var_value = var_part.split('=', 1)
+        var_name = var_name.strip()
+        var_value = var_value.strip()
+        
+        # Try to parse the value
+        try:
+            # Try to evaluate as Python literal
+            parsed_value = ast.literal_eval(var_value)
+            return var_name, parsed_value
+        except (ValueError, SyntaxError):
+            # If it's not a valid Python literal, treat as string
+            return var_name, var_value
 
-        var_name = match.group(1)
-        var_value_str = match.group(2).strip()
-
-        # If quoted string, treat as string
-        if (var_value_str.startswith('"') and var_value_str.endswith('"')) or (
-            var_value_str.startswith("'") and var_value_str.endswith("'")
-        ):
-            var_value = var_value_str[1:-1]
-        else:
-            # Try to parse as Python literal (list, dict, int, float, bool, etc.)
-            try:
-                var_value = ast.literal_eval(var_value_str)
-            except Exception:
-                var_value = var_value_str
-
-        print(
-            f"[DEBUG] Parsed variable: {var_name} = {var_value_str} -> {var_value} (type: {type(var_value)})"
-        )
-        return var_name, var_value
-
-    def _parse_service_step(self, line: str) -> Tuple[str, Dict[str, Any]]:
-        """Parse service step: step name: service.task(params)"""
-        match = re.match(r"step\s+(\w+):\s*(\w+)\.(\w+)\((.+)\)", line)
-        if not match:
-            raise ValueError(f"Invalid service step: {line}")
-
-        step_id = match.group(1)
-        service_name = match.group(2)
-        task_name = match.group(3)
-        params_str = match.group(4)
-
-        # Parse parameters
-        inputs = self._parse_parameters(params_str)
-
-        step_config = {
-            "service": service_name,
-            "task": task_name,
-            "inputs": inputs,
-            "dependencies": [],
-            "type": "service",
-        }
-
-        return step_id, step_config
-
-    def _parse_parameters(self, params_str: str) -> Dict[str, Any]:
-        """Parse function parameters: key=value, key2=value2"""
-        if not params_str.strip():
+    def _parse_parameters(self, param_str: str, known_steps: set = None) -> Dict[str, Any]:
+        """Parse function parameters with proper handling of complex values, and convert step.field references to $step.field if step is known."""
+        if not param_str.strip():
             return {}
-
-        inputs = {}
-        # Split by comma, but handle nested parentheses
-        params = self._split_params(params_str)
-
-        for param in params:
-            if "=" in param:
-                key, value_str = param.split("=", 1)
+        
+        params = {}
+        # Split by comma, but handle nested parentheses, brackets, and quotes
+        param_parts = self._split_params(param_str)
+        
+        for part in param_parts:
+            part = part.strip()
+            if '=' in part:
+                key, value_str = part.split('=', 1)
                 key = key.strip()
                 value_str = value_str.strip()
-
-                # Try to parse as Python literal first (for lists, tuples, etc.)
+                
+                # Try to parse the value
                 try:
-                    # Handle both quoted and unquoted values
-                    if value_str.startswith('"') and value_str.endswith('"'):
-                        # Quoted string
-                        value = value_str[1:-1]
-                    elif value_str.startswith("'") and value_str.endswith("'"):
-                        # Single quoted string
+                    # Try to evaluate as Python literal first
+                    value = ast.literal_eval(value_str)
+                except (ValueError, SyntaxError):
+                    # If it's not a valid Python literal, treat as string
+                    # Remove quotes if present
+                    if (value_str.startswith('"') and value_str.endswith('"')) or \
+                       (value_str.startswith("'") and value_str.endswith("'")):
                         value = value_str[1:-1]
                     else:
-                        # Try to parse as Python literal (for numbers, booleans, arrays, objects)
-                        value = ast.literal_eval(value_str)
-                except (ValueError, SyntaxError):
-                    # If literal_eval fails, try JSON parsing
-                    try:
-                        value = json.loads(value_str)
-                    except json.JSONDecodeError:
-                        # If JSON parsing fails, treat as string
                         value = value_str
-
-                inputs[key] = value
-
-        return inputs
+                
+                # If value is a string, check for various patterns that need resolution
+                if isinstance(value, str):
+                    # Check for step.field references and convert to $step.field if step is known
+                    if (
+                        known_steps is not None
+                        and re.match(r"^([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_\.]*)$", value)
+                    ):
+                        step_candidate = value.split(".")[0]
+                        if step_candidate in known_steps:
+                            value = f"${value}"
+                    
+                    # Check for string concatenation expressions (e.g., "Invalid file: " + file)
+                    elif "+" in value and re.search(r'["\'][^"\']*["\'][^+]*\+[^+]*[a-zA-Z_][a-zA-Z0-9_]*', value):
+                        # This looks like string concatenation, mark it for later evaluation
+                        value = f"EVAL:{value}"
+                
+                params[key] = value
+        
+        return params
 
     def _split_params(self, params_str: str) -> List[str]:
         """Split parameters by comma, respecting parentheses, brackets, and quotes"""
@@ -223,7 +130,7 @@ class WorkflowDSL:
         paren_count = 0
         bracket_count = 0
         quote_char = None
-
+        
         for char in params_str:
             if char in ['"', "'"] and (quote_char is None or char == quote_char):
                 if quote_char is None:
@@ -252,164 +159,262 @@ class WorkflowDSL:
                 continue
             else:
                 current += char
-
+        
         if current.strip():
             params.append(current.strip())
-
+        
         return params
 
-    def _parse_condition(
-        self, lines: List[str], start_idx: int
-    ) -> Tuple[str, Dict[str, Any]]:
-        """Parse if-else condition block"""
-        condition_line = lines[start_idx]
-        condition_match = re.match(r"if\s+(.+)", condition_line)
-        if not condition_match:
-            raise ValueError(f"Invalid condition: {condition_line}")
+    def _parse_service_step(self, line: str, known_steps: set = None) -> Tuple[str, Dict[str, Any]]:
+        """Parse a service step declaration, passing known_steps for reference resolution."""
+        # Extract step name and service call
+        step_match = re.match(r"step\s+(\w+):\s*(\w+)\.(\w+)\((.*)\)", line)
+        if not step_match:
+            raise ValueError(f"Invalid service step: {line}")
+        
+        step_id = step_match.group(1)
+        service = step_match.group(2)
+        task = step_match.group(3)
+        params_str = step_match.group(4)
+        
+        inputs = self._parse_parameters(params_str, known_steps=known_steps)
+        
+        step_config = {
+            "service": service,
+            "task": task,
+            "inputs": inputs,
+            "dependencies": [],
+            "type": "service"
+        }
+        
+        return step_id, step_config
 
-        condition = condition_match.group(1).strip()
-
-        # Find the block content
+    def _extract_block(self, lines: List[str], start_idx: int) -> Tuple[List[str], int]:
+        """Extract a block of indented lines starting from start_idx"""
         block_lines = []
-        else_block_lines = []
-        in_else = False
-        brace_count = 0
-
-        for i in range(start_idx + 1, len(lines)):
+        i = start_idx + 1
+        
+        # Find the indentation level of the block header
+        header_line = lines[start_idx]
+        header_indent = len(header_line) - len(header_line.lstrip())
+        
+        while i < len(lines):
             line = lines[i]
-
-            if line.startswith("else:"):
-                in_else = True
+            stripped = line.lstrip()
+            
+            # Skip empty lines and comments
+            if not stripped or stripped.startswith("#"):
+                i += 1
                 continue
-
-            if (
-                line.startswith("if ")
-                or line.startswith("parallel:")
-                or line.startswith("for ")
-            ):
-                break
-
-            if in_else:
-                else_block_lines.append(line)
-            else:
-                block_lines.append(line)
-
-        # Parse the blocks
-        if_steps = self._parse_block_steps(block_lines)
-        else_steps = (
-            self._parse_block_steps(else_block_lines) if else_block_lines else {}
-        )
-
-        # Create condition step
-        condition_step_id = f"condition_{self.step_counter}"
-        self.step_counter += 1
-
-        condition_config = {
-            "type": "condition",
-            "condition": condition,
-            "if_steps": list(if_steps.keys()),
-            "else_steps": list(else_steps.keys()),
-            "dependencies": [],
-        }
-
-        all_steps = {condition_step_id: condition_config}
-        all_steps.update(if_steps)
-        all_steps.update(else_steps)
-
-        return condition, all_steps
-
-    def _parse_parallel_block(self, lines: List[str], start_idx: int) -> Dict[str, Any]:
-        """Parse parallel execution block"""
-        block_lines = []
-
-        for i in range(start_idx + 1, len(lines)):
-            line = lines[i]
-
-            if (
-                line.startswith("if ")
-                or line.startswith("parallel:")
-                or line.startswith("for ")
-            ):
-                break
-
+            
+            # Determine indentation level
+            indent = len(line) - len(line.lstrip())
+            
+            # If this line is at the same or less indentation as the header, 
+            # and it's not empty, it's the end of the block
+            if indent <= header_indent and stripped:
+                # Check if it's a new top-level construct
+                if (stripped.startswith("step ") or stripped.startswith("if ") or 
+                    stripped == "parallel:" or stripped.startswith("for ") or
+                    stripped.startswith("var ")):
+                    break
+            
+            # This line is part of the block
             block_lines.append(line)
+            i += 1
+        
+        return block_lines, i
 
-        # Parse steps in the block
-        steps = self._parse_block_steps(block_lines)
+    def _get_block_key(self, block_type: str, content: str) -> str:
+        """Generate a unique key for a block to avoid duplicates"""
+        return f"{block_type}:{hash(content)}"
 
-        # Create parallel step
-        parallel_step_id = f"parallel_{self.step_counter}"
-        self.step_counter += 1
+    def _parse_workflow_recursive(self, lines: List[str], start_idx: int = 0, known_steps: set = None) -> Tuple[Dict[str, Any], List[str], int]:
+        """Recursive workflow parser that tracks known step names for reference resolution."""
+        if known_steps is None:
+            known_steps = set()
+        steps = {}
+        top_level_ids = []
+        i = start_idx
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.lstrip()
+            if stripped.startswith("step "):
+                step_id, step_config = self._parse_service_step(stripped, known_steps=known_steps)
+                steps[step_id] = step_config
+                top_level_ids.append(step_id)
+                known_steps.add(step_id)
+                i += 1
+            elif stripped.startswith("for "):
+                loop_steps, loop_ids, next_idx = self._parse_loop_recursive(lines, i, known_steps=known_steps)
+                steps.update(loop_steps)
+                top_level_ids.extend(loop_ids)
+                i = next_idx
+            elif stripped.startswith("if "):
+                cond_steps, cond_ids, next_idx = self._parse_condition_recursive(lines, i, known_steps=known_steps)
+                steps.update(cond_steps)
+                top_level_ids.extend(cond_ids)
+                i = next_idx
+            elif stripped == "parallel:":
+                parallel_steps, parallel_ids, next_idx = self._parse_parallel_recursive(lines, i, known_steps=known_steps)
+                steps.update(parallel_steps)
+                top_level_ids.extend(parallel_ids)
+                i = next_idx
+            else:
+                i += 1
+        return steps, top_level_ids, i
 
-        parallel_config = {
-            "type": "parallel",
-            "steps": list(steps.keys()),
-            "dependencies": [],
-        }
-
-        all_steps = {parallel_step_id: parallel_config}
-        all_steps.update(steps)
-
-        return all_steps
-
-    def _parse_loop_block(self, lines: List[str], start_idx: int) -> Dict[str, Any]:
-        """Parse for loop block"""
+    def _parse_loop_recursive(self, lines: List[str], start_idx: int, known_steps: set = None) -> Tuple[Dict[str, Any], List[str], int]:
+        """Parse a loop block recursively, passing known_steps for reference resolution."""
         loop_line = lines[start_idx]
-        loop_match = re.match(r"for\s+(\w+)\s+in\s+(.+)", loop_line)
+        loop_match = re.match(r"for\s+(\w+)\s+in\s+(.+)", loop_line.lstrip())
         if not loop_match:
             raise ValueError(f"Invalid loop: {loop_line}")
-
         var_name = loop_match.group(1)
         collection = loop_match.group(2).strip()
-        # Fix: Remove trailing colon if present
         if collection.endswith(":"):
             collection = collection[:-1].strip()
-
-        # Find the block content
-        block_lines = []
-
-        for i in range(start_idx + 1, len(lines)):
-            line = lines[i]
-
-            if (
-                line.startswith("if ")
-                or line.startswith("parallel:")
-                or line.startswith("for ")
-            ):
-                break
-
-            block_lines.append(line)
-
-        # Parse steps in the block
-        steps = self._parse_block_steps(block_lines)
-
-        # Create loop step
-        loop_step_id = f"loop_{self.step_counter}"
-        self.step_counter += 1
-
+        block_lines, next_idx = self._extract_block(lines, start_idx)
+        # Recursively parse the loop body
+        body_steps, body_ids, _ = self._parse_workflow_recursive(block_lines, 0, known_steps=known_steps.copy())
+        loop_step_id = f"loop_{self.loop_counter}"
+        self.loop_counter += 1
         loop_config = {
             "type": "loop",
             "variable": var_name,
             "collection": collection,
-            "steps": list(steps.keys()),
+            "steps": body_ids,
             "dependencies": [],
         }
-
         all_steps = {loop_step_id: loop_config}
-        all_steps.update(steps)
+        all_steps.update(body_steps)
+        return all_steps, [loop_step_id], next_idx
 
-        return all_steps
+    def _parse_condition_recursive(self, lines: List[str], start_idx: int, known_steps: set = None) -> Tuple[Dict[str, Any], List[str], int]:
+        """Parse a condition block recursively, passing known_steps for reference resolution."""
+        condition_line = lines[start_idx]
+        condition_match = re.match(r"if\s+(.+):", condition_line.lstrip())
+        if not condition_match:
+            raise ValueError(f"Invalid condition: {condition_line}")
+        condition = condition_match.group(1).strip()
+        if condition.endswith(":"):
+            condition = condition[:-1].strip()
+        block_lines, next_idx = self._extract_block(lines, start_idx)
+        else_pos = -1
+        for i, line in enumerate(block_lines):
+            if line.lstrip() == "else:":
+                else_pos = i
+                break
+        if_section_lines = block_lines[:else_pos] if else_pos != -1 else block_lines
+        if_steps, if_ids, _ = self._parse_workflow_recursive(if_section_lines, 0, known_steps=known_steps.copy())
+        else_steps, else_ids = {}, []
+        if else_pos != -1:
+            else_section_lines = block_lines[else_pos + 1:]
+            else_steps, else_ids, _ = self._parse_workflow_recursive(else_section_lines, 0, known_steps=known_steps.copy())
+        condition_step_id = f"condition_{self.condition_counter}"
+        self.condition_counter += 1
+        condition_config = {
+            "type": "condition",
+            "condition": condition,
+            "if_steps": if_ids,
+            "else_steps": else_ids,
+            "dependencies": [],
+        }
+        all_steps = {condition_step_id: condition_config}
+        all_steps.update(if_steps)
+        all_steps.update(else_steps)
+        return all_steps, [condition_step_id], next_idx
 
-    def _parse_block_steps(self, lines: List[str]) -> Dict[str, Any]:
-        """Parse steps within a block (if, parallel, loop)"""
-        steps = {}
+    def _parse_parallel_recursive(self, lines: List[str], start_idx: int, known_steps: set = None) -> Tuple[Dict[str, Any], List[str], int]:
+        """Parse a parallel block recursively, passing known_steps for reference resolution."""
+        block_lines, next_idx = self._extract_block(lines, start_idx)
+        body_steps, body_ids, _ = self._parse_workflow_recursive(block_lines, 0, known_steps=known_steps.copy())
+        parallel_step_id = f"parallel_{self.parallel_counter}"
+        self.parallel_counter += 1
+        parallel_config = {
+            "type": "parallel",
+            "steps": body_ids,
+            "dependencies": [],
+        }
+        all_steps = {parallel_step_id: parallel_config}
+        all_steps.update(body_steps)
+        return all_steps, [parallel_step_id], next_idx
 
+    def _calculate_dependencies(self, steps: Dict[str, Any]) -> Dict[str, List[str]]:
+        """Calculate dependencies between steps based on input references"""
+        dependencies = {}
+        
+        for step_id, step_config in steps.items():
+            if step_config.get("type") != "service":
+                dependencies[step_id] = []
+                continue
+                
+            deps = []
+            inputs = step_config.get("inputs", {})
+            
+            for input_value in inputs.values():
+                # Look for references to other step results
+                if isinstance(input_value, str):
+                    # Handle both formats: step.field and $step.field
+                    if input_value.startswith("$"):
+                        # Remove $ prefix and check for step.field pattern
+                        ref_value = input_value[1:]
+                        if "." in ref_value:
+                            ref_step = ref_value.split(".")[0]
+                            if ref_step in steps:
+                                deps.append(ref_step)
+                    elif "." in input_value:
+                        # Original format: step.field
+                        ref_step = input_value.split(".")[0]
+                        if ref_step in steps:
+                            deps.append(ref_step)
+            
+            dependencies[step_id] = deps
+        
+        return dependencies
+
+    def parse_workflow(self, dsl_code: str) -> Dict[str, Any]:
+        """Parse a complete workflow DSL, using known_steps for reference resolution."""
+        self.step_counter = 0
+        self.loop_counter = 0
+        self.condition_counter = 0
+        self.parallel_counter = 0
+        self.parsed_blocks = {}
+        lines = []
+        for line in dsl_code.split("\n"):
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                lines.append(line)
+        
+        # First pass: collect all step names
+        all_step_names = set()
         for line in lines:
-            if line.startswith("step "):
-                step_id, step_config = self._parse_service_step(line)
-                steps[step_id] = step_config
-
-        return steps
+            if line.lstrip().startswith("step ") and ":" in line:
+                step_name = line.lstrip().split(":", 1)[0].replace("step ", "").strip()
+                all_step_names.add(step_name)
+        
+        # Second pass: parse variables and workflow
+        variables = {}
+        workflow_lines = []
+        for line in lines:
+            if line.lstrip().startswith("var "):
+                var_name, var_value = self._parse_variable(line.lstrip())
+                variables[var_name] = var_value
+            else:
+                workflow_lines.append(line)
+        
+        # Parse workflow with full step knowledge
+        steps, _, _ = self._parse_workflow_recursive(workflow_lines, 0, known_steps=all_step_names)
+        dependencies = self._calculate_dependencies(steps)
+        for step_id, deps in dependencies.items():
+            if step_id in steps:
+                steps[step_id]["dependencies"] = deps
+        workflow = {
+            "steps": steps,
+            "variables": variables,
+            "metadata": {"source": dsl_code, "compiled_at": "2024-01-01T00:00:00Z"},
+        }
+        return workflow
 
 
 class WorkflowTemplate:
@@ -455,6 +460,16 @@ class WorkflowTemplate:
             else:
                 quoted_replacement = str(param_value)
             compiled_dsl = quoted_pattern.sub(rf"\1{quoted_replacement}", compiled_dsl)
+
+            # Handle placeholders in variable values: var name = ${param}
+            var_pattern = re.compile(
+                rf"(var\s+\w+\s*=\s*){re.escape(placeholder)}"
+            )
+            if isinstance(param_value, str):
+                var_replacement = f'"{param_value}"'
+            else:
+                var_replacement = str(param_value)
+            compiled_dsl = var_pattern.sub(rf"\1{var_replacement}", compiled_dsl)
 
             # Replace any remaining placeholders (not in var assignment)
             if isinstance(param_value, str):

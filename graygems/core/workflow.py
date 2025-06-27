@@ -603,28 +603,41 @@ class WorkflowManager:
             # NEW: If the string matches a variable name, return the variable value
             if value in transaction.variables:
                 return transaction.variables[value]
-            # Check for embedded dependency references in the string
-            pattern = r"\$([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_.]*)"
-
-            def replace_reference(match):
-                ref = match.group(0)  # Full match including $
+            # Handle EVAL: prefixed strings for string concatenation
+            if value.startswith("EVAL:"):
+                eval_expr = value[5:]  # Remove EVAL: prefix
                 try:
-                    resolved = self._resolve_dependency_reference(transaction, ref)
-                    return str(resolved)
+                    # Create a safe evaluation context with transaction variables
+                    eval_context = transaction.variables.copy()
+                    # Add step outputs to context for evaluation
+                    for step_id, step in transaction.steps.items():
+                        if hasattr(step, 'outputs') and step.outputs:
+                            for output_key, output_value in step.outputs.items():
+                                eval_context[f"{step_id}.{output_key}"] = output_value
+                    # Evaluate the expression
+                    result = eval(eval_expr, {"__builtins__": {}}, eval_context)
+                    return result
                 except Exception as e:
-                    logger.warning(f"Failed to resolve reference {ref}: {e}")
-                    return ref  # Return original if resolution fails
-
-            resolved_string = re.sub(pattern, replace_reference, value)
-            return resolved_string
-        elif isinstance(value, dict):
-            # Recursively resolve dictionary values
-            return {k: self._resolve_value(transaction, v) for k, v in value.items()}
-        elif isinstance(value, list):
-            # Recursively resolve list values
+                    # If evaluation fails, return the original string
+                    return value
+            # Check for embedded references of the form $step.field
+            if "$" in value:
+                # Replace embedded references
+                def replace_ref(match):
+                    ref = match.group(0)
+                    return str(self._resolve_dependency_reference(transaction, ref))
+                
+                # Use regex to find and replace embedded references
+                import re
+                pattern = r'\$[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_\.]*'
+                result = re.sub(pattern, replace_ref, value)
+                return result
+            return value
+        elif isinstance(value, (list, tuple)):
             return [self._resolve_value(transaction, item) for item in value]
+        elif isinstance(value, dict):
+            return {k: self._resolve_value(transaction, v) for k, v in value.items()}
         else:
-            # Return other types as-is
             return value
 
     def _resolve_dependency_reference(
