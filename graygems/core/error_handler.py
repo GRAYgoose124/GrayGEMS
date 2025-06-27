@@ -95,10 +95,18 @@ class GrayGemsErrorHandler:
         """Create a standardized error response"""
         error_message = str(error) if error else "Unknown error occurred"
         
-        # Log the error for debugging
-        logger.error(f"GrayGEMS Error [{error_type}]: {error_message}")
-        if error:
-            logger.error(f"Traceback: {traceback.format_exc()}")
+        # Log the error with appropriate level based on status code
+        if status_code >= 500:
+            # Server errors - log as error with traceback
+            logger.error(f"GrayGEMS Server Error [{error_type}]: {error_message}")
+            if error:
+                logger.error(f"Traceback: {traceback.format_exc()}")
+        elif status_code >= 400:
+            # Client errors - log as warning without traceback (expected behavior)
+            logger.warning(f"GrayGEMS Client Error [{error_type}]: {error_message}")
+        else:
+            # Other errors - log as info
+            logger.info(f"GrayGEMS Error [{error_type}]: {error_message}")
         
         error_response = ErrorResponse(
             success=False,
