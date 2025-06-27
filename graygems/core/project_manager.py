@@ -84,6 +84,22 @@ class ProjectManager:
         """Validate if token has access to project (alias for validate_token)"""
         return self.validate_token(project_id, token)
     
+    def validate_project_access_optional(self, project_id: str, token: Optional[str] = None) -> bool:
+        """Validate project access with optional token (for public projects)"""
+        project = self.projects.get(project_id)
+        if not project:
+            return False
+        
+        # Public projects don't require a token
+        if project.is_public():
+            return True
+        
+        # Private projects require a valid token
+        if not token:
+            return False
+        
+        return project.validate_token(token)
+    
     def get_project_dir(self, project_id: str) -> Optional[Path]:
         """Get project directory path"""
         project = self.projects.get(project_id)
@@ -159,4 +175,30 @@ class ProjectManager:
             "active_projects": active_projects,
             "expired_projects": expired_projects,
             "base_directory": str(self.base_dir)
-        } 
+        }
+    
+    def make_project_public(self, project_id: str, token: str) -> bool:
+        """Make a project publicly accessible (requires token for authorization)"""
+        if not self.validate_project_access(project_id, token):
+            return False
+        
+        project = self.projects.get(project_id)
+        if project:
+            project.make_public()
+            logger.info(f"Made project {project_id} public")
+            return True
+        
+        return False
+    
+    def make_project_private(self, project_id: str, token: str) -> bool:
+        """Make a project private (requires token for authorization)"""
+        if not self.validate_project_access(project_id, token):
+            return False
+        
+        project = self.projects.get(project_id)
+        if project:
+            project.make_private()
+            logger.info(f"Made project {project_id} private")
+            return True
+        
+        return False 

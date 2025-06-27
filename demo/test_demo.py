@@ -451,6 +451,240 @@ def test_complex_workflow(project_id, token):
         save_response("complex_workflow_error", {"error": str(e)}, 500)
         return False
 
+def test_public_project_creation():
+    """Test creating a public project"""
+    print("\n🌐 Testing public project creation...")
+    try:
+        project_data = {
+            "name": "Public Test Project",
+            "description": "A public test project for GrayGEMS demo",
+            "is_public": True
+        }
+        
+        response = requests.post(f"{BASE_URL}/projects", json=project_data, headers=HEADERS)
+        if response.status_code == 200:
+            data = response.json()
+            project_id = data['data']['project_id']
+            token = data['data']['token']
+            is_public = data['data']['is_public']
+            print(f"✅ Public project created: {project_id}")
+            print(f"   Token: {token[:8]}...")
+            print(f"   Public: {is_public}")
+            save_response("public_project_creation", data, response.status_code)
+            return project_id, token
+        else:
+            print(f"❌ Public project creation failed: {response.status_code}")
+            print(f"   Response: {response.text}")
+            save_response("public_project_creation_failed", {"error": response.text}, response.status_code)
+            return None, None
+    except Exception as e:
+        print(f"❌ Public project creation error: {e}")
+        save_response("public_project_creation_error", {"error": str(e)}, 500)
+        return None, None
+
+def test_public_project_access(public_project_id):
+    """Test accessing a public project without token"""
+    print(f"\n🔓 Testing public project access without token...")
+    try:
+        # Test getting project info without token
+        response = requests.get(f"{BASE_URL}/projects/{public_project_id}")
+        if response.status_code == 200:
+            data = response.json()
+            print(f"✅ Public project accessible without token")
+            print(f"   Name: {data['data']['name']}")
+            print(f"   Public: {data['data']['is_public']}")
+            save_response("public_project_access", data, response.status_code)
+            return True
+        else:
+            print(f"❌ Public project access failed: {response.status_code}")
+            print(f"   Response: {response.text}")
+            save_response("public_project_access_failed", {"error": response.text}, response.status_code)
+            return False
+    except Exception as e:
+        print(f"❌ Public project access error: {e}")
+        save_response("public_project_access_error", {"error": str(e)}, 500)
+        return False
+
+def test_public_project_download(public_project_id):
+    """Test downloading from public project without token"""
+    print(f"\n📥 Testing public project download without token...")
+    try:
+        # Test downloading the file that was actually created by the workflow
+        response = requests.get(f"{BASE_URL}/projects/{public_project_id}/download/outputs/complex_results.txt")
+        if response.status_code == 200:
+            print(f"✅ Public project download successful without token")
+            print(f"   Content-Type: {response.headers.get('content-type', 'unknown')}")
+            print(f"   Content-Length: {response.headers.get('content-length', 'unknown')} bytes")
+            
+            # Save the downloaded file
+            downloads_dir = Path(__file__).parent / "downloads"
+            downloads_dir.mkdir(exist_ok=True)
+            
+            download_filename = f"public_download_{public_project_id}.txt"
+            download_path = downloads_dir / download_filename
+            with open(download_path, 'wb') as f:
+                f.write(response.content)
+            print(f"   Saved to: {download_path}")
+            
+            # Try to decode as text for display
+            try:
+                content_text = response.content.decode('utf-8')
+                print(f"   Content preview: {content_text[:100]}...")
+            except:
+                print(f"   Content: Binary file")
+            
+            save_response("public_project_download", {
+                "download_path": str(download_path),
+                "content_length": response.headers.get('content-length'),
+                "content_type": response.headers.get('content-type'),
+                "content_preview": response.content.decode('utf-8')[:200] if response.content else ""
+            }, response.status_code)
+            return True
+        else:
+            print(f"❌ Public project download failed: {response.status_code}")
+            print(f"   Response: {response.text}")
+            save_response("public_project_download_failed", {"error": response.text}, response.status_code)
+            return False
+    except Exception as e:
+        print(f"❌ Public project download error: {e}")
+        save_response("public_project_download_error", {"error": str(e)}, 500)
+        return False
+
+def test_make_project_private(public_project_id, public_token):
+    """Test making a project private"""
+    print(f"\n🔒 Testing make project private...")
+    try:
+        headers = {"X-Project-Token": public_token}
+        response = requests.post(f"{BASE_URL}/projects/{public_project_id}/make-private", headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            print(f"✅ Project made private successfully")
+            print(f"   Public: {data['data']['is_public']}")
+            save_response("make_project_private", data, response.status_code)
+            return True
+        else:
+            print(f"❌ Make project private failed: {response.status_code}")
+            print(f"   Response: {response.text}")
+            save_response("make_project_private_failed", {"error": response.text}, response.status_code)
+            return False
+    except Exception as e:
+        print(f"❌ Make project private error: {e}")
+        save_response("make_project_private_error", {"error": str(e)}, 500)
+        return False
+
+def test_private_project_access_denied(public_project_id):
+    """Test that private project access is denied without token"""
+    print(f"\n🚫 Testing private project access denied without token...")
+    try:
+        # Test getting project info without token (should fail)
+        response = requests.get(f"{BASE_URL}/projects/{public_project_id}")
+        if response.status_code == 401:
+            data = response.json()
+            print(f"✅ Private project correctly denied access without token")
+            print(f"   Error: {data.get('error', 'Unknown error')}")
+            save_response("private_project_access_denied", data, response.status_code)
+            return True
+        else:
+            print(f"❌ Private project access should have been denied: {response.status_code}")
+            print(f"   Response: {response.text}")
+            save_response("private_project_access_denied_failed", {"error": response.text}, response.status_code)
+            return False
+    except Exception as e:
+        print(f"❌ Private project access denied test error: {e}")
+        save_response("private_project_access_denied_error", {"error": str(e)}, 500)
+        return False
+
+def test_make_project_public(public_project_id, public_token):
+    """Test making a project public again"""
+    print(f"\n🌐 Testing make project public...")
+    try:
+        headers = {"X-Project-Token": public_token}
+        response = requests.post(f"{BASE_URL}/projects/{public_project_id}/make-public", headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            print(f"✅ Project made public successfully")
+            print(f"   Public: {data['data']['is_public']}")
+            save_response("make_project_public", data, response.status_code)
+            return True
+        else:
+            print(f"❌ Make project public failed: {response.status_code}")
+            print(f"   Response: {response.text}")
+            save_response("make_project_public_failed", {"error": response.text}, response.status_code)
+            return False
+    except Exception as e:
+        print(f"❌ Make project public error: {e}")
+        save_response("make_project_public_error", {"error": str(e)}, 500)
+        return False
+
+def test_workflow_on_public_project(public_project_id, public_token):
+    """Test running a workflow on a public project"""
+    print(f"\n⚙️ Testing workflow execution on public project...")
+    try:
+        # Complex workflow with multiple calculator operations and file outputs
+        workflow_data = {
+            "workflow": {
+                "name": "Complex Calculator Workflow",
+                "steps": {
+                    "add": {
+                        "service": "calculator.math",
+                        "task": "add",
+                        "inputs": {
+                            "a": 10,
+                            "b": 20
+                        },
+                        "dependencies": []
+                    },
+                    "multiply": {
+                        "service": "calculator.multiply",
+                        "task": "multiply",
+                        "inputs": {
+                            "a": 5,
+                            "b": 3
+                        },
+                        "dependencies": []
+                    },
+                    "calculate_mean": {
+                        "service": "calculator.statistics",
+                        "task": "calculate_mean",
+                        "inputs": {
+                            "numbers": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+                        },
+                        "dependencies": []
+                    },
+                    "save_results": {
+                        "service": "file_utils",
+                        "task": "process_file",
+                        "inputs": {
+                            "operation": "write",
+                            "source_path": "outputs/complex_results.txt",
+                            "content": "Complex Calculator Results:\nAddition: $add.result\nMultiplication: $multiply.result\nMean: $calculate_mean.result"
+                        },
+                        "dependencies": ["add", "multiply", "calculate_mean"]
+                    }
+                }
+            }
+        }
+        
+        headers = {"X-Project-Token": public_token}
+        response = requests.post(f"{BASE_URL}/projects/{public_project_id}/workflow", 
+                               json=workflow_data, headers=headers)
+        
+        if response.status_code == 200:
+            data = response.json()
+            print(f"✅ Complex workflow executed successfully on public project")
+            print(f"   Steps completed: {len(data['data']['steps'])}")
+            save_response("public_project_workflow", data, response.status_code)
+            return True
+        else:
+            print(f"❌ Complex workflow failed on public project: {response.status_code}")
+            print(f"   Response: {response.text}")
+            save_response("public_project_workflow_failed", {"error": response.text}, response.status_code)
+            return False
+    except Exception as e:
+        print(f"❌ Complex workflow error on public project: {e}")
+        save_response("public_project_workflow_error", {"error": str(e)}, 500)
+        return False
+
 def main():
     """Run all tests"""
     print("🚀 Starting GrayGEMS Demo Tests")
@@ -471,7 +705,7 @@ def main():
         print("❌ Services endpoint failed")
         return
     
-    # Test project functionality
+    # Test private project functionality
     project_id, token = test_create_project()
     if not project_id or not token:
         print("❌ Project creation failed")
@@ -516,18 +750,53 @@ def main():
         print("❌ Project deletion failed")
         return
     
+    # Test public project functionality
+    public_project_id, public_token = test_public_project_creation()
+    if not public_project_id or not public_token:
+        print("❌ Public project creation failed")
+        return
+    
+    # Run a workflow on the public project to create some files
+    if not test_workflow_on_public_project(public_project_id, public_token):
+        print("❌ Public project workflow failed")
+        return
+    
+    if not test_public_project_access(public_project_id):
+        print("❌ Public project access test failed")
+        return
+    
+    if not test_public_project_download(public_project_id):
+        print("❌ Public project download test failed")
+        return
+    
+    if not test_make_project_private(public_project_id, public_token):
+        print("❌ Make project private test failed")
+        return
+    
+    if not test_private_project_access_denied(public_project_id):
+        print("❌ Private project access denied test failed")
+        return
+    
+    if not test_make_project_public(public_project_id, public_token):
+        print("❌ Make project public test failed")
+        return
+    
     print("\n" + "=" * 50)
     print("✅ All tests completed successfully!")
-    print(f"📁 Project ID: {project_id}")
-    print(f"🔑 Token: {token[:8]}...")
+    print(f"📁 Private Project ID: {project_id}")
+    print(f"🔑 Private Token: {token[:8]}...")
+    print(f"📁 Public Project ID: {public_project_id}")
+    print(f"🔑 Public Token: {public_token[:8]}...")
     print(f"💾 Test results saved to: {TEST_RESULTS_DIR.absolute()}")
     
     # Create a summary file
     summary = {
         "test_summary": {
             "timestamp": datetime.now().isoformat(),
-            "project_id": project_id,
-            "token_prefix": token[:8] + "...",
+            "private_project_id": project_id,
+            "private_token_prefix": token[:8] + "...",
+            "public_project_id": public_project_id,
+            "public_token_prefix": public_token[:8] + "...",
             "tests_passed": [
                 "health_check",
                 "root_endpoint", 
@@ -540,7 +809,14 @@ def main():
                 "archive_download",
                 "invalid_token_test",
                 "project_extension",
-                "project_deletion"
+                "project_deletion",
+                "public_project_creation",
+                "public_project_workflow",
+                "public_project_access",
+                "public_project_download",
+                "make_project_private",
+                "private_project_access_denied",
+                "make_project_public"
             ],
             "test_results_directory": str(TEST_RESULTS_DIR.absolute())
         }

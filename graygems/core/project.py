@@ -19,6 +19,7 @@ class ProjectConfig(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     expires_at: Optional[datetime] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    is_public: bool = False  # Whether the project is publicly accessible
 
 class Project:
     def __init__(self, config: Optional[ProjectConfig] = None):
@@ -115,7 +116,8 @@ class Project:
             "token_hash": self.config.token_hash,  # Store hash instead of plain token
             "created_at": self.config.created_at.isoformat(),
             "expires_at": self.config.expires_at.isoformat() if self.config.expires_at else None,
-            "metadata": self.config.metadata
+            "metadata": self.config.metadata,
+            "is_public": self.config.is_public
         }
         
         import json
@@ -133,6 +135,10 @@ class Project:
     
     def validate_token(self, token: str) -> bool:
         """Validate if the provided token is valid for this project"""
+        # Public projects don't require token validation
+        if self.config.is_public:
+            return True
+        
         if not token or not self.config.token_hash:
             return False
         
@@ -171,6 +177,7 @@ class Project:
             "created_at": self.config.created_at.isoformat(),
             "expires_at": self.config.expires_at.isoformat() if self.config.expires_at else None,
             "is_expired": self.is_expired(),
+            "is_public": self.config.is_public,
             "project_dir": str(self.project_dir),
             "metadata": self.config.metadata
         }
@@ -254,6 +261,20 @@ class Project:
         """Get metadata from the project"""
         return self.config.metadata.get(key, default)
     
+    def is_public(self) -> bool:
+        """Check if the project is publicly accessible"""
+        return self.config.is_public
+    
+    def make_public(self):
+        """Make the project publicly accessible"""
+        self.config.is_public = True
+        self._save_metadata()
+    
+    def make_private(self):
+        """Make the project private (requires token)"""
+        self.config.is_public = False
+        self._save_metadata()
+    
     @classmethod
     def load(cls, project_id: str, base_dir: Optional[Path] = None) -> "Project":
         """Load existing project"""
@@ -268,5 +289,6 @@ class Project:
             if metadata.get("expires_at"):
                 project.config.expires_at = datetime.fromisoformat(metadata["expires_at"])
             project.config.metadata = metadata.get("metadata", {})
+            project.config.is_public = metadata.get("is_public", False)
         
         return project

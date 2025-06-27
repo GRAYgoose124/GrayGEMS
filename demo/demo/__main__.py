@@ -84,6 +84,7 @@ else:
 class CreateProjectRequest(BaseModel):
     name: str
     description: Optional[str] = None
+    is_public: bool = False
 
 class WorkflowRequest(BaseModel):
     workflow: Dict[str, Any]
@@ -123,6 +124,10 @@ async def create_project(request: CreateProjectRequest):
     try:
         project = project_manager.create_project(request.name, request.description)
         
+        # Set public status if requested
+        if request.is_public:
+            project.make_public()
+        
         # Get the token from the project (this is only available for new projects)
         try:
             token = project.token
@@ -137,6 +142,7 @@ async def create_project(request: CreateProjectRequest):
                 "project_id": project.project_id,
                 "token": token,
                 "name": project.name,
+                "is_public": project.is_public(),
                 "created_at": project.created_at.isoformat()
             }
         )
@@ -145,14 +151,15 @@ async def create_project(request: CreateProjectRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/projects/{project_id}", response_model=SuccessResponse)
-async def get_project(project_id: str, x_project_token: str = Header(None)):
+async def get_project(project_id: str, x_project_token: Optional[str] = Header(None)):
     """Get project details"""
     try:
-        if not x_project_token:
-            raise HTTPException(status_code=401, detail="Project token required")
-        
-        if not project_manager.validate_token(project_id, x_project_token):
-            raise HTTPException(status_code=401, detail="Invalid project token")
+        # Validate project access (token optional for public projects)
+        if not project_manager.validate_project_access_optional(project_id, x_project_token):
+            if x_project_token:
+                raise HTTPException(status_code=401, detail="Invalid project token")
+            else:
+                raise HTTPException(status_code=401, detail="Project token required for private projects")
         
         project = project_manager.get_project(project_id)
         if not project:
@@ -165,7 +172,8 @@ async def get_project(project_id: str, x_project_token: str = Header(None)):
                 "name": project.name,
                 "description": project.description,
                 "created_at": project.created_at.isoformat(),
-                "status": project.status
+                "status": project.status,
+                "is_public": project.is_public()
             }
         )
     except HTTPException:
@@ -218,14 +226,15 @@ async def execute_workflow(project_id: str, request: WorkflowRequest, x_project_
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/projects/{project_id}/download/{file_path:path}")
-async def download_file(project_id: str, file_path: str, x_project_token: str = Header(None)):
+async def download_file(project_id: str, file_path: str, x_project_token: Optional[str] = Header(None)):
     """Download a file from a project"""
     try:
-        if not x_project_token:
-            raise HTTPException(status_code=401, detail="Project token required")
-        
-        if not project_manager.validate_token(project_id, x_project_token):
-            raise HTTPException(status_code=401, detail="Invalid project token")
+        # Validate project access (token optional for public projects)
+        if not project_manager.validate_project_access_optional(project_id, x_project_token):
+            if x_project_token:
+                raise HTTPException(status_code=401, detail="Invalid project token")
+            else:
+                raise HTTPException(status_code=401, detail="Project token required for private projects")
         
         project_dir = project_manager.get_project_dir(project_id)
         if not project_dir:
@@ -439,6 +448,56 @@ async def list_transactions(project_id: str, x_project_token: str = Header(None)
         raise
     except Exception as e:
         logger.error(f"Failed to list transactions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/projects/{project_id}/make-public", response_model=SuccessResponse)
+async def make_project_public(project_id: str, x_project_token: str = Header(None)):
+    """Make a project publicly accessible"""
+    try:
+        if not x_project_token:
+            raise HTTPException(status_code=401, detail="Project token required")
+        
+        success = project_manager.make_project_public(project_id, x_project_token)
+        if not success:
+            raise HTTPException(status_code=404, detail="Project not found or access denied")
+        
+        return SuccessResponse(
+            message="Project made public successfully",
+            data={
+                "project_id": project_id,
+                "is_public": True,
+                "updated_at": datetime.now().isoformat()
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to make project public: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/projects/{project_id}/make-private", response_model=SuccessResponse)
+async def make_project_private(project_id: str, x_project_token: str = Header(None)):
+    """Make a project private (requires token)"""
+    try:
+        if not x_project_token:
+            raise HTTPException(status_code=401, detail="Project token required")
+        
+        success = project_manager.make_project_private(project_id, x_project_token)
+        if not success:
+            raise HTTPException(status_code=404, detail="Project not found or access denied")
+        
+        return SuccessResponse(
+            message="Project made private successfully",
+            data={
+                "project_id": project_id,
+                "is_public": False,
+                "updated_at": datetime.now().isoformat()
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to make project private: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

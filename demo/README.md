@@ -31,6 +31,7 @@ python test_demo.py
 
 ### Project Management
 - Token-based authentication
+- **Public/Private Projects**: Support for public projects that don't require tokens
 - Project isolation
 - Automatic expiration
 - Metadata support
@@ -82,9 +83,26 @@ demo/
 
 ### Create a Project
 ```bash
+# Create a private project (default)
 curl -X POST http://localhost:8000/projects \
   -H "Content-Type: application/json" \
   -d '{"name": "My Project", "description": "Test project"}'
+
+# Create a public project
+curl -X POST http://localhost:8000/projects \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Public Project", "description": "Public test project", "is_public": true}'
+```
+
+### Manage Project Access
+```bash
+# Make a project public
+curl -X POST http://localhost:8000/projects/{project_id}/make-public \
+  -H "X-Project-Token: {token}"
+
+# Make a project private
+curl -X POST http://localhost:8000/projects/{project_id}/make-private \
+  -H "X-Project-Token: {token}"
 ```
 
 ### Execute a Workflow
@@ -108,9 +126,13 @@ curl -X POST http://localhost:8000/projects/{project_id}/workflow \
 
 ### Download Files
 ```bash
-# Download a specific file
+# Download from private project (requires token)
 curl -X GET http://localhost:8000/projects/{project_id}/download/outputs/result.txt \
   -H "X-Project-Token: {token}" \
+  --output downloaded_file.txt
+
+# Download from public project (no token required)
+curl -X GET http://localhost:8000/projects/{project_id}/download/outputs/result.txt \
   --output downloaded_file.txt
 
 # Create and download project archive
@@ -142,7 +164,13 @@ curl -X GET http://localhost:8000/projects/{project_id}/download/{archive_filena
 - Clear separation of server and client responsibilities
 - Proper file path handling and security
 
-### 4. Enhanced Error Handling
+### 4. Enhanced Security Model
+- **Public/Private Projects**: Support for projects that don't require authentication
+- Token-based access control for private projects
+- Optional token validation for public projects
+- Secure project access management
+
+### 5. Enhanced Error Handling
 - Better error messages and logging
 - Proper HTTP status codes
 - Graceful fallbacks for file operations
