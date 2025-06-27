@@ -6,6 +6,7 @@ import json
 import asyncio
 from pathlib import Path
 from datetime import datetime
+import re
 
 from .models import APIRequest, APIResponse, ServiceCall
 from .project import Project
@@ -252,14 +253,44 @@ class WorkflowManager:
         resolved_inputs = {}
         
         for key, value in step.inputs.items():
-            if isinstance(value, str) and value.startswith("$"):
-                # This is a dependency reference
-                resolved_value = self._resolve_dependency_reference(transaction, value)
-                resolved_inputs[key] = resolved_value
-            else:
-                resolved_inputs[key] = value
+            resolved_inputs[key] = self._resolve_value(transaction, value)
         
         return resolved_inputs
+    
+    def _resolve_value(self, transaction: WorkflowTransaction, value: Any) -> Any:
+        """Recursively resolve dependency references in any value"""
+        if isinstance(value, str):
+            # Check if the entire string is a dependency reference
+            if value.startswith("$"):
+                return self._resolve_dependency_reference(transaction, value)
+            
+            # Check for embedded dependency references in the string
+            # Look for patterns like $step.field or $step.field.subfield
+            pattern = r'\$([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_.]*)'
+            
+            def replace_reference(match):
+                ref = match.group(0)  # Full match including $
+                try:
+                    resolved = self._resolve_dependency_reference(transaction, ref)
+                    return str(resolved)
+                except Exception as e:
+                    logger.warning(f"Failed to resolve reference {ref}: {e}")
+                    return ref  # Return original if resolution fails
+            
+            resolved_string = re.sub(pattern, replace_reference, value)
+            return resolved_string
+        
+        elif isinstance(value, dict):
+            # Recursively resolve dictionary values
+            return {k: self._resolve_value(transaction, v) for k, v in value.items()}
+        
+        elif isinstance(value, list):
+            # Recursively resolve list values
+            return [self._resolve_value(transaction, item) for item in value]
+        
+        else:
+            # Return other types as-is
+            return value
     
     def _resolve_dependency_reference(self, transaction: WorkflowTransaction, reference: str) -> Any:
         """Resolve a dependency reference like '$step_name.output_field'"""
