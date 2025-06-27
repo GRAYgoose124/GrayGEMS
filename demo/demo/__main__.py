@@ -9,9 +9,12 @@ import sys
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 import logging
+from datetime import datetime
+import shutil
 
 # Add the demo directory to Python path
 demo_dir = Path(__file__).parent
@@ -50,11 +53,9 @@ setup_error_handling(app)
 # Demo-specific directories
 DEMO_DIR = Path(__file__).parent.parent
 PROJECTS_DIR = DEMO_DIR / "projects"
-DOWNLOADS_DIR = DEMO_DIR / "downloads"
 
 # Ensure directories exist
 PROJECTS_DIR.mkdir(exist_ok=True)
-DOWNLOADS_DIR.mkdir(exist_ok=True)
 
 # Initialize components
 config_manager = ConfigManager()
@@ -121,11 +122,20 @@ async def create_project(request: CreateProjectRequest):
     """Create a new project"""
     try:
         project = project_manager.create_project(request.name, request.description)
+        
+        # Get the token from the project (this is only available for new projects)
+        try:
+            token = project.token
+        except ValueError:
+            # This shouldn't happen for new projects, but handle it gracefully
+            logger.error("Failed to get token from new project")
+            raise HTTPException(status_code=500, detail="Failed to generate project token")
+        
         return SuccessResponse(
             message="Project created successfully",
             data={
                 "project_id": project.project_id,
-                "token": project.token,
+                "token": token,
                 "name": project.name,
                 "created_at": project.created_at.isoformat()
             }
@@ -207,7 +217,7 @@ async def execute_workflow(project_id: str, request: WorkflowRequest, x_project_
         logger.error(f"Workflow execution failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/projects/{project_id}/download/{file_path:path}", response_model=SuccessResponse)
+@app.get("/projects/{project_id}/download/{file_path:path}")
 async def download_file(project_id: str, file_path: str, x_project_token: str = Header(None)):
     """Download a file from a project"""
     try:
@@ -218,31 +228,81 @@ async def download_file(project_id: str, file_path: str, x_project_token: str = 
             raise HTTPException(status_code=401, detail="Invalid project token")
         
         project_dir = project_manager.get_project_dir(project_id)
+        if not project_dir:
+            raise HTTPException(status_code=404, detail="Project directory not found")
+        
         file_path_obj = Path(file_path)
         
         # Security check: prevent directory traversal
         if ".." in str(file_path_obj):
             raise HTTPException(status_code=400, detail="Invalid file path")
         
-        full_path = project_dir / file_path_obj
-        if not full_path.exists():
+        # Look for the file in multiple locations
+        possible_paths = []
+        
+        # 1. Check in project directory
+        project_file_path = project_dir / file_path_obj
+        if project_file_path.exists():
+            possible_paths.append(project_file_path)
+        
+        # 2. Check for archives in the projects base directory
+        if file_path_obj.name.endswith('.zip'):
+            projects_base_dir = project_dir.parent
+            archive_path = projects_base_dir / file_path_obj.name
+            if archive_path.exists():
+                possible_paths.append(archive_path)
+        
+        if not possible_paths:
             raise HTTPException(status_code=404, detail="File not found")
         
-        # For demo purposes, return file info
-        # In a real implementation, you'd return the actual file
+        # Use the first available path
+        full_path = possible_paths[0]
+        
+        # Return the file as a downloadable response
+        return FileResponse(
+            path=full_path,
+            filename=file_path_obj.name,
+            media_type='application/octet-stream'
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/projects/{project_id}/archive", response_model=SuccessResponse)
+async def create_project_archive(project_id: str, x_project_token: str = Header(None)):
+    """Create a project archive"""
+    try:
+        if not x_project_token:
+            raise HTTPException(status_code=401, detail="Project token required")
+        
+        if not project_manager.validate_token(project_id, x_project_token):
+            raise HTTPException(status_code=401, detail="Invalid project token")
+        
+        project = project_manager.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Create the archive
+        archive_path = project.create_archive()
+        
         return SuccessResponse(
-            message="File download info",
+            message="Project archive created successfully",
             data={
-                "file_path": str(file_path),
-                "size": full_path.stat().st_size,
-                "exists": True,
-                "note": "In a real implementation, this would return the actual file"
+                "project_id": project_id,
+                "archive_path": str(archive_path),
+                "archive_filename": archive_path.name,
+                "archive_size": archive_path.stat().st_size if archive_path.exists() else 0,
+                "download_url": f"/projects/{project_id}/download/{archive_path.name}",
+                "created_at": datetime.now().isoformat()
             }
         )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get file info: {e}")
+        logger.error(f"Failed to create project archive: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/services", response_model=SuccessResponse)
@@ -259,6 +319,127 @@ async def list_services():
         message="Services retrieved successfully",
         data={"services": services}
     )
+
+@app.post("/projects/{project_id}/extend", response_model=SuccessResponse)
+async def extend_project(project_id: str, days: int = 30, x_project_token: str = Header(None)):
+    """Extend project expiration"""
+    try:
+        if not x_project_token:
+            raise HTTPException(status_code=401, detail="Project token required")
+        
+        if not project_manager.validate_token(project_id, x_project_token):
+            raise HTTPException(status_code=401, detail="Invalid project token")
+        
+        success = project_manager.extend_project(project_id, x_project_token, days)
+        if not success:
+            raise HTTPException(status_code=404, detail="Project not found or extension failed")
+        
+        project = project_manager.get_project(project_id)
+        return SuccessResponse(
+            message="Project extended successfully",
+            data={
+                "project_id": project_id,
+                "extended_by_days": days,
+                "new_expiration": project.config.expires_at.isoformat() if project.config.expires_at else None
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to extend project: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/projects/{project_id}", response_model=SuccessResponse)
+async def delete_project(project_id: str, x_project_token: str = Header(None)):
+    """Delete a project"""
+    try:
+        if not x_project_token:
+            raise HTTPException(status_code=401, detail="Project token required")
+        
+        if not project_manager.validate_token(project_id, x_project_token):
+            raise HTTPException(status_code=401, detail="Invalid project token")
+        
+        success = project_manager.delete_project(project_id, x_project_token)
+        if not success:
+            raise HTTPException(status_code=404, detail="Project not found or deletion failed")
+        
+        return SuccessResponse(
+            message="Project deleted successfully",
+            data={
+                "project_id": project_id,
+                "deleted_at": datetime.now().isoformat()
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete project: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/projects", response_model=SuccessResponse)
+async def list_projects():
+    """List all projects (admin endpoint)"""
+    try:
+        projects = project_manager.list_projects()
+        return SuccessResponse(
+            message="Projects retrieved successfully",
+            data={
+                "projects": projects,
+                "total_count": len(projects)
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to list projects: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/cleanup", response_model=SuccessResponse)
+async def cleanup_expired_projects():
+    """Clean up expired projects (admin endpoint)"""
+    try:
+        cleaned_count = project_manager.cleanup_expired_projects()
+        return SuccessResponse(
+            message="Cleanup completed successfully",
+            data={
+                "cleaned_projects": cleaned_count,
+                "cleanup_time": datetime.now().isoformat()
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to cleanup projects: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/projects/{project_id}/transactions", response_model=SuccessResponse)
+async def list_transactions(project_id: str, x_project_token: str = Header(None)):
+    """List transactions for a project"""
+    try:
+        if not x_project_token:
+            raise HTTPException(status_code=401, detail="Project token required")
+        
+        if not project_manager.validate_token(project_id, x_project_token):
+            raise HTTPException(status_code=401, detail="Invalid project token")
+        
+        # Get project directory
+        project_dir = project_manager.get_project_dir(project_id)
+        if not project_dir:
+            raise HTTPException(status_code=404, detail="Project directory not found")
+        
+        # Create workflow manager to access transactions
+        workflow_manager = WorkflowManager(service_registry, project_dir)
+        transactions = workflow_manager.list_transactions()
+        
+        return SuccessResponse(
+            message="Transactions retrieved successfully",
+            data={
+                "project_id": project_id,
+                "transactions": transactions,
+                "total_count": len(transactions)
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to list transactions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

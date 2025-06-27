@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Optional
 from ..models import FileUtilsInput, FileUtilsOutput
+import zipfile
 
 def process_file(inputs: FileUtilsInput, project_dir: Optional[str] = None) -> FileUtilsOutput:
     """Process file operations"""
@@ -16,6 +17,8 @@ def process_file(inputs: FileUtilsInput, project_dir: Optional[str] = None) -> F
         return _delete_file(inputs, project_dir)
     elif operation == "write":
         return _write_file(inputs, project_dir)
+    elif operation == "archive":
+        return create_archive(inputs, project_dir)
     else:
         return FileUtilsOutput(
             success=False,
@@ -185,4 +188,48 @@ def _write_file(inputs: FileUtilsInput, project_dir: Optional[str] = None) -> Fi
         return FileUtilsOutput(
             success=False,
             message=f"Failed to write file: {str(e)}"
+        )
+
+def create_archive(inputs: FileUtilsInput, project_dir: Optional[str] = None) -> FileUtilsOutput:
+    """Create a project archive"""
+    try:
+        if not project_dir:
+            return FileUtilsOutput(
+                success=False,
+                message="Project directory not specified"
+            )
+        
+        project_path = Path(project_dir)
+        if not project_path.exists():
+            return FileUtilsOutput(
+                success=False,
+                message=f"Project directory does not exist: {project_dir}"
+            )
+        
+        # Create archive path
+        archive_name = inputs.source_path or f"{project_path.name}_archive.zip"
+        archive_path = project_path.parent / archive_name
+        
+        # Create the ZIP archive
+        with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            file_count = 0
+            total_size = 0
+            
+            for file_path in project_path.rglob('*'):
+                if file_path.is_file():
+                    arcname = file_path.relative_to(project_path)
+                    zf.write(file_path, arcname)
+                    file_count += 1
+                    total_size += file_path.stat().st_size
+        
+        return FileUtilsOutput(
+            success=True,
+            message=f"Archive created successfully: {archive_name}",
+            file_path=str(archive_path),
+            file_size=archive_path.stat().st_size
+        )
+    except Exception as e:
+        return FileUtilsOutput(
+            success=False,
+            message=f"Failed to create archive: {str(e)}"
         ) 

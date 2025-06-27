@@ -12,7 +12,6 @@ class ProjectManager:
     def __init__(self, base_dir: Optional[Path] = None):
         self.base_dir = base_dir or Path.cwd() / "projects"
         self.projects: Dict[str, Project] = {}
-        self.token_to_project: Dict[str, str] = {}  # token -> project_id mapping
         
         # Ensure base directory exists
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -28,8 +27,6 @@ class ProjectManager:
                     try:
                         project = Project.load(project_dir.name, self.base_dir)
                         self.projects[project.project_id] = project
-                        if project.config.token:
-                            self.token_to_project[project.config.token] = project.project_id
                         logger.info(f"Loaded existing project: {project.project_id}")
                     except Exception as e:
                         logger.warning(f"Failed to load project {project_dir.name}: {e}")
@@ -52,9 +49,11 @@ class ProjectManager:
         
         project = Project(config)
         self.projects[project.project_id] = project
-        self.token_to_project[project.config.token] = project.project_id
         
-        logger.info(f"Created new project: {project.project_id} with token: {project.config.token[:8]}...")
+        # Get the plain token for return (this is the only time it's available)
+        plain_token = project.token
+        
+        logger.info(f"Created new project: {project.project_id} with token: {plain_token[:8]}...")
         return project
     
     def get_project(self, project_id: str) -> Optional[Project]:
@@ -63,20 +62,11 @@ class ProjectManager:
     
     def get_project_by_token(self, token: str) -> Optional[Project]:
         """Get project by token with validation"""
-        if token not in self.token_to_project:
-            return None
-        
-        project_id = self.token_to_project[token]
-        project = self.projects.get(project_id)
-        
-        if not project:
-            return None
-        
-        # Validate token
-        if not project.validate_token(token):
-            return None
-        
-        return project
+        # Search through all projects to find one with matching token
+        for project in self.projects.values():
+            if project.validate_token(token):
+                return project
+        return None
     
     def get_project_by_id(self, project_id: str) -> Optional[Project]:
         """Get project by ID (alias for get_project)"""
@@ -113,8 +103,6 @@ class ProjectManager:
         project_list = []
         for project in self.projects.values():
             info = project.get_info()
-            # Don't include token in list
-            info.pop("token", None)
             project_list.append(info)
         return project_list
     
@@ -124,8 +112,6 @@ class ProjectManager:
             return False
         
         project = self.projects.pop(project_id, None)
-        if project and project.config.token:
-            self.token_to_project.pop(project.config.token, None)
         
         if project:
             project.cleanup()
@@ -157,8 +143,6 @@ class ProjectManager:
         
         for project_id in expired_projects:
             project = self.projects.pop(project_id)
-            if project.config.token:
-                self.token_to_project.pop(project.config.token, None)
             project.cleanup()
             logger.info(f"Cleaned up expired project: {project_id}")
         

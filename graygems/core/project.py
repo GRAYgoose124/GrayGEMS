@@ -5,6 +5,7 @@ import zipfile
 import tempfile
 import hashlib
 import time
+import secrets
 from pathlib import Path
 from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field
@@ -13,7 +14,8 @@ from datetime import datetime, timedelta
 class ProjectConfig(BaseModel):
     project_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     base_dir: Optional[Path] = None
-    token: Optional[str] = None
+    token_hash: Optional[str] = None  # Store hash instead of plain token
+    plain_token: Optional[str] = None  # Temporary storage for new projects
     created_at: datetime = Field(default_factory=datetime.now)
     expires_at: Optional[datetime] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -24,8 +26,9 @@ class Project:
         self.project_id = self.config.project_id
         
         # Generate token if not provided
-        if not self.config.token:
-            self.config.token = self._generate_token()
+        if not self.config.token_hash and not self.config.plain_token:
+            self.config.plain_token = self._generate_token()
+            self.config.token_hash = self._hash_token(self.config.plain_token)
         
         # Set expiration if not provided (default 30 days)
         if not self.config.expires_at:
@@ -64,8 +67,10 @@ class Project:
     
     @property
     def token(self) -> str:
-        """Get project token"""
-        return self.config.token
+        """Get project token (only available for new projects)"""
+        if self.config.plain_token:
+            return self.config.plain_token
+        raise ValueError("Token not available for loaded projects (security)")
     
     @property
     def created_at(self) -> datetime:
@@ -74,9 +79,12 @@ class Project:
     
     def _generate_token(self) -> str:
         """Generate a secure token for project access"""
-        # Create a unique token based on project ID and timestamp
-        token_data = f"{self.project_id}:{time.time()}:{uuid.uuid4()}"
-        return hashlib.sha256(token_data.encode()).hexdigest()[:32]
+        # Use secrets for cryptographically secure random token
+        return secrets.token_urlsafe(32)
+    
+    def _hash_token(self, token: str) -> str:
+        """Hash a token for secure storage"""
+        return hashlib.sha256(token.encode()).hexdigest()
     
     def _initialize(self):
         """Create project directory structure"""
@@ -104,7 +112,7 @@ class Project:
         metadata_file = self.project_dir / "project.json"
         metadata = {
             "project_id": self.project_id,
-            "token": self.config.token,
+            "token_hash": self.config.token_hash,  # Store hash instead of plain token
             "created_at": self.config.created_at.isoformat(),
             "expires_at": self.config.expires_at.isoformat() if self.config.expires_at else None,
             "metadata": self.config.metadata
@@ -125,7 +133,12 @@ class Project:
     
     def validate_token(self, token: str) -> bool:
         """Validate if the provided token is valid for this project"""
-        if not token or token != self.config.token:
+        if not token or not self.config.token_hash:
+            return False
+        
+        # Hash the provided token and compare with stored hash
+        provided_hash = self._hash_token(token)
+        if provided_hash != self.config.token_hash:
             return False
         
         # Check if project has expired
@@ -165,20 +178,63 @@ class Project:
     def create_archive(self) -> Path:
         """Package project directory into ZIP archive"""
         try:
-            archive_path = self.base_dir / f"{self.project_id}.zip"
-            archive_path.parent.mkdir(parents=True, exist_ok=True)
-        except (PermissionError, OSError):
-            # Fallback to temp directory for archive
-            archive_path = Path(tempfile.gettempdir()) / "graygems" / f"{self.project_id}.zip"
-            archive_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for file_path in self.project_dir.rglob('*'):
-                if file_path.is_file():
-                    arcname = file_path.relative_to(self.project_dir)
-                    zf.write(file_path, arcname)
-        
-        return archive_path
+            # Ensure project directory exists
+            if not self.project_dir.exists():
+                raise FileNotFoundError(f"Project directory does not exist: {self.project_dir}")
+            
+            # Create archive path
+            try:
+                archive_path = self.base_dir / f"{self.project_id}.zip"
+                archive_path.parent.mkdir(parents=True, exist_ok=True)
+            except (PermissionError, OSError):
+                # Fallback to temp directory for archive
+                archive_path = Path(tempfile.gettempdir()) / "graygems" / f"{self.project_id}.zip"
+                archive_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Create the ZIP archive
+            with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                file_count = 0
+                total_size = 0
+                
+                for file_path in self.project_dir.rglob('*'):
+                    if file_path.is_file():
+                        arcname = file_path.relative_to(self.project_dir)
+                        zf.write(file_path, arcname)
+                        file_count += 1
+                        total_size += file_path.stat().st_size
+                
+                # Add metadata about the archive
+                metadata = {
+                    "project_id": self.project_id,
+                    "created_at": datetime.now().isoformat(),
+                    "file_count": file_count,
+                    "total_size": total_size,
+                    "archive_version": "1.0"
+                }
+                
+                # Write metadata as a JSON file in the archive
+                import json
+                metadata_content = json.dumps(metadata, indent=2)
+                zf.writestr("archive_metadata.json", metadata_content)
+            
+            # Verify the archive was created successfully
+            if not archive_path.exists():
+                raise RuntimeError("Archive file was not created")
+            
+            archive_size = archive_path.stat().st_size
+            if archive_size == 0:
+                raise RuntimeError("Archive file is empty")
+            
+            return archive_path
+            
+        except Exception as e:
+            # Clean up any partial archive
+            if 'archive_path' in locals() and archive_path.exists():
+                try:
+                    archive_path.unlink()
+                except:
+                    pass
+            raise RuntimeError(f"Failed to create project archive: {str(e)}")
     
     def cleanup(self):
         """Remove project directory"""
@@ -207,7 +263,7 @@ class Project:
         # Load metadata from file
         metadata = project._load_metadata()
         if metadata:
-            project.config.token = metadata.get("token")
+            project.config.token_hash = metadata.get("token_hash")  # Load hash instead of plain token
             project.config.created_at = datetime.fromisoformat(metadata.get("created_at", datetime.now().isoformat()))
             if metadata.get("expires_at"):
                 project.config.expires_at = datetime.fromisoformat(metadata["expires_at"])

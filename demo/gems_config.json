@@ -97,6 +97,12 @@
           "description": "Process file operations",
           "input_model": "FileUtilsInput",
           "output_model": "FileUtilsOutput"
+        },
+        "create_archive": {
+          "enabled": true,
+          "description": "Create project archives",
+          "input_model": "FileUtilsInput",
+          "output_model": "FileUtilsOutput"
         }
       }
     },
