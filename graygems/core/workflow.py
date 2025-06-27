@@ -128,6 +128,39 @@ class WorkflowManager:
     
     def create_dsl_transaction(self, dsl_code: str, project_id: str, **parameters) -> WorkflowTransaction:
         """Create a transaction from DSL code"""
+        # Perform parameter substitution if parameters are provided
+        if parameters:
+            import re
+            substituted_dsl = dsl_code
+            
+            for param_name, param_value in parameters.items():
+                placeholder = f"${{{param_name}}}"
+                
+                # Handle unquoted placeholders in var assignments: var name = ${param}
+                unquoted_pattern = re.compile(rf'(var\s+{param_name}\s*=\s*){re.escape(placeholder)}')
+                if isinstance(param_value, str):
+                    unquoted_replacement = f'"{param_value}"'
+                else:
+                    unquoted_replacement = str(param_value)
+                substituted_dsl = unquoted_pattern.sub(lambda m: m.group(1) + unquoted_replacement, substituted_dsl)
+                
+                # Handle quoted placeholders in var assignments: var name = "${param}"
+                quoted_pattern = re.compile(rf'(var\s+{param_name}\s*=\s*)["\"][^"\"]*{re.escape(placeholder)}[^"\"]*["\"]')
+                if isinstance(param_value, str):
+                    quoted_replacement = f'"{param_value}"'
+                else:
+                    quoted_replacement = str(param_value)
+                substituted_dsl = quoted_pattern.sub(lambda m: m.group(1) + quoted_replacement, substituted_dsl)
+                
+                # Replace any remaining placeholders (not in var assignment)
+                if isinstance(param_value, str):
+                    replacement = f'"{param_value}"'
+                else:
+                    replacement = str(param_value)
+                substituted_dsl = substituted_dsl.replace(placeholder, replacement)
+            
+            dsl_code = substituted_dsl
+        
         # Parse DSL code
         workflow_data = self.dsl_parser.parse_workflow(dsl_code)
         
@@ -398,7 +431,7 @@ class WorkflowManager:
         """Execute a loop step"""
         # Get the collection to iterate over
         collection = self._resolve_value(transaction, step.loop_collection)
-        
+        print(f"[DEBUG] Loop step {step.step_id}: collection={collection} (type: {type(collection)})")
         if not isinstance(collection, (list, tuple)):
             raise WorkflowError(f"Loop collection must be a list or tuple, got {type(collection)}")
         
@@ -492,12 +525,11 @@ class WorkflowManager:
             # Check if the entire string is a dependency reference
             if value.startswith("$"):
                 return self._resolve_dependency_reference(transaction, value)
-            
+            # NEW: If the string matches a variable name, return the variable value
+            if value in transaction.variables:
+                return transaction.variables[value]
             # Check for embedded dependency references in the string
-            # Look for patterns like $step.field or $step.field.subfield
-            # Updated pattern to match $add.result, $multiply.result, etc.
             pattern = r'\$([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_.]*)'
-            
             def replace_reference(match):
                 ref = match.group(0)  # Full match including $
                 try:
@@ -506,18 +538,14 @@ class WorkflowManager:
                 except Exception as e:
                     logger.warning(f"Failed to resolve reference {ref}: {e}")
                     return ref  # Return original if resolution fails
-            
             resolved_string = re.sub(pattern, replace_reference, value)
             return resolved_string
-        
         elif isinstance(value, dict):
             # Recursively resolve dictionary values
             return {k: self._resolve_value(transaction, v) for k, v in value.items()}
-        
         elif isinstance(value, list):
             # Recursively resolve list values
             return [self._resolve_value(transaction, item) for item in value]
-        
         else:
             # Return other types as-is
             return value

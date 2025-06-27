@@ -6,10 +6,12 @@ Provides a pseudocode language for defining workflows with conditions, branching
 import re
 import json
 import logging
+import ast
 from typing import Dict, List, Any, Optional, Union, Tuple
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -126,13 +128,17 @@ class WorkflowDSL:
         var_name = match.group(1)
         var_value_str = match.group(2).strip()
         
-        # Try to parse as JSON, otherwise treat as string
-        try:
-            var_value = json.loads(var_value_str)
-        except json.JSONDecodeError:
-            # Remove quotes if present
-            var_value = var_value_str.strip('"\'')
+        # If quoted string, treat as string
+        if (var_value_str.startswith('"') and var_value_str.endswith('"')) or (var_value_str.startswith("'") and var_value_str.endswith("'")):
+            var_value = var_value_str[1:-1]
+        else:
+            # Try to parse as Python literal (list, dict, int, float, bool, etc.)
+            try:
+                var_value = ast.literal_eval(var_value_str)
+            except Exception:
+                var_value = var_value_str
         
+        print(f"[DEBUG] Parsed variable: {var_name} = {var_value_str} -> {var_value} (type: {type(var_value)})")
         return var_name, var_value
     
     def _parse_service_step(self, line: str) -> Tuple[str, Dict[str, Any]]:
@@ -174,7 +180,7 @@ class WorkflowDSL:
                 key = key.strip()
                 value_str = value_str.strip()
                 
-                # Try to parse as JSON, otherwise treat as string
+                # Try to parse as Python literal first (for lists, tuples, etc.)
                 try:
                     # Handle both quoted and unquoted values
                     if value_str.startswith('"') and value_str.endswith('"'):
@@ -184,11 +190,15 @@ class WorkflowDSL:
                         # Single quoted string
                         value = value_str[1:-1]
                     else:
-                        # Try to parse as JSON (for numbers, booleans, arrays, objects)
+                        # Try to parse as Python literal (for numbers, booleans, arrays, objects)
+                        value = ast.literal_eval(value_str)
+                except (ValueError, SyntaxError):
+                    # If literal_eval fails, try JSON parsing
+                    try:
                         value = json.loads(value_str)
-                except json.JSONDecodeError:
-                    # If JSON parsing fails, treat as string
-                    value = value_str
+                    except json.JSONDecodeError:
+                        # If JSON parsing fails, treat as string
+                        value = value_str
                 
                 inputs[key] = value
         
@@ -327,6 +337,9 @@ class WorkflowDSL:
         
         var_name = loop_match.group(1)
         collection = loop_match.group(2).strip()
+        # Fix: Remove trailing colon if present
+        if collection.endswith(":"):
+            collection = collection[:-1].strip()
         
         # Find the block content
         block_lines = []
@@ -381,30 +394,45 @@ class WorkflowTemplate:
     
     def compile(self, **kwargs) -> Dict[str, Any]:
         """Compile the template with provided parameters"""
-        # Replace parameters in DSL code
         compiled_dsl = self.dsl_code
-        
-        # Create a combined parameter dict with runtime parameters overriding defaults
         all_params = self.parameters.copy()
         all_params.update(kwargs)
         
-        # Replace all parameters in DSL code
+        print("DEBUG - Parameters for substitution:")
+        for param_name, param_value in all_params.items():
+            print(f"  {param_name}: {param_value} (type: {type(param_value)})")
+        
         for param_name, param_value in all_params.items():
             placeholder = f"${{{param_name}}}"
-            if placeholder in compiled_dsl:
-                # Convert value to string representation
-                if isinstance(param_value, str):
-                    # For strings, keep as is
-                    replacement = param_value
-                else:
-                    # For other types, convert to JSON string
-                    replacement = json.dumps(param_value)
-                compiled_dsl = compiled_dsl.replace(placeholder, replacement)
+            
+            # Handle unquoted placeholders in var assignments: var name = ${param}
+            unquoted_pattern = re.compile(rf'(var\s+{param_name}\s*=\s*){re.escape(placeholder)}')
+            if isinstance(param_value, str):
+                unquoted_replacement = f'"{param_value}"'
+            else:
+                unquoted_replacement = str(param_value)
+            compiled_dsl = unquoted_pattern.sub(rf'\1{unquoted_replacement}', compiled_dsl)
+            
+            # Handle quoted placeholders in var assignments: var name = "${param}"
+            quoted_pattern = re.compile(rf'(var\s+{param_name}\s*=\s*)["\"][^"\"]*{re.escape(placeholder)}[^"\"]*["\"]')
+            if isinstance(param_value, str):
+                quoted_replacement = f'"{param_value}"'
+            else:
+                quoted_replacement = str(param_value)
+            compiled_dsl = quoted_pattern.sub(rf'\1{quoted_replacement}', compiled_dsl)
+            
+            # Replace any remaining placeholders (not in var assignment)
+            if isinstance(param_value, str):
+                replacement = f'"{param_value}"'
+            else:
+                replacement = str(param_value)
+            compiled_dsl = compiled_dsl.replace(placeholder, replacement)
         
-        # Parse the compiled DSL
+        print("DEBUG - After substitution:")
+        print(compiled_dsl)
+        
         dsl_parser = WorkflowDSL()
         self.compiled_workflow = dsl_parser.parse_workflow(compiled_dsl)
-        
         return self.compiled_workflow
     
     def to_dict(self) -> Dict[str, Any]:
