@@ -198,6 +198,9 @@ class WorkflowManager:
             # Resolve inputs with dependency references
             resolved_inputs = self._resolve_step_inputs(transaction, step)
             
+            # Store resolved inputs in metadata for response
+            step.metadata["resolved_inputs"] = resolved_inputs
+            
             # Get service and task
             service = self.registry.get_service(step.service_name)
             if not service:
@@ -266,6 +269,7 @@ class WorkflowManager:
             
             # Check for embedded dependency references in the string
             # Look for patterns like $step.field or $step.field.subfield
+            # Updated pattern to match $add.result, $multiply.result, etc.
             pattern = r'\$([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_.]*)'
             
             def replace_reference(match):
@@ -338,7 +342,7 @@ class WorkflowManager:
                     "status": step.status,
                     "service": step.service_name,
                     "task": step.task_name,
-                    "inputs": step.inputs,
+                    "inputs": step.metadata.get("resolved_inputs", step.inputs),
                     "outputs": step.outputs,
                     "error": step.error,
                     "start_time": step.start_time.isoformat() if step.start_time else None,
