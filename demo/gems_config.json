@@ -1,0 +1,117 @@
+{
+  "name": "GrayGEMS Demo Configuration",
+  "version": "1.0.0",
+  "description": "Example configuration showing how to use GrayGEMS to build an API",
+  "settings": {
+    "default_expiration_days": 30,
+    "max_projects_per_user": 100,
+    "auto_cleanup_expired": true
+  },
+  "entities": {
+    "calculator": {
+      "enabled": true,
+      "description": "Calculator services",
+      "module": "demo.entities.calculator.calculator_tasks",
+      "services": {
+        "math": {
+          "enabled": true,
+          "description": "Basic mathematical operations",
+          "input_model": "MathInput",
+          "output_model": "MathOutput",
+          "task_func": "add",
+          "dependencies": []
+        },
+        "multiply": {
+          "enabled": true,
+          "description": "Multiplication operations",
+          "input_model": "MathInput",
+          "output_model": "MathOutput",
+          "task_func": "multiply",
+          "dependencies": []
+        },
+        "statistics": {
+          "enabled": true,
+          "description": "Statistical operations",
+          "input_model": "StatisticsInput",
+          "output_model": "StatisticsOutput",
+          "task_func": "calculate_mean",
+          "dependencies": []
+        }
+      }
+    },
+    "text_processor": {
+      "enabled": true,
+      "description": "Text processing services",
+      "module": "demo.entities.text_processor.text_tasks",
+      "services": {
+        "word_analysis": {
+          "enabled": true,
+          "description": "Word analysis operations",
+          "input_model": "TextAnalysisInput",
+          "output_model": "TextAnalysisOutput",
+          "task_func": "word_count",
+          "dependencies": []
+        },
+        "character_analysis": {
+          "enabled": true,
+          "description": "Character analysis operations",
+          "input_model": "TextAnalysisInput",
+          "output_model": "TextAnalysisOutput",
+          "task_func": "character_count",
+          "dependencies": []
+        }
+      }
+    },
+    "gpbuilder": {
+      "enabled": true,
+      "description": "Molecular modeling services",
+      "module": "demo.entities.gpbuilder.gpbuilder_tasks",
+      "services": {
+        "structure": {
+          "enabled": true,
+          "description": "Molecular structure building",
+          "input_model": "StructureInput",
+          "output_model": "StructureOutput",
+          "task_func": "build_structure",
+          "dependencies": []
+        },
+        "energy": {
+          "enabled": true,
+          "description": "Energy evaluation",
+          "input_model": "EnergyInput",
+          "output_model": "EnergyOutput",
+          "task_func": "evaluate_energy",
+          "dependencies": []
+        }
+      }
+    }
+  },
+  "core_services": {
+    "file_utils": {
+      "enabled": true,
+      "description": "Core file utility operations",
+      "module": "graygems.core.tasks.file_utils",
+      "tasks": {
+        "process_file": {
+          "enabled": true,
+          "description": "Process file operations",
+          "input_model": "FileUtilsInput",
+          "output_model": "FileUtilsOutput"
+        }
+      }
+    },
+    "data_processor": {
+      "enabled": true,
+      "description": "Core data processing operations",
+      "module": "graygems.core.tasks.data_processor",
+      "tasks": {
+        "process_data": {
+          "enabled": true,
+          "description": "Process and transform data",
+          "input_model": "DataProcessorInput",
+          "output_model": "DataProcessorOutput"
+        }
+      }
+    }
+  }
+}
