@@ -35,7 +35,7 @@ class Project:
         if not self.config.expires_at:
             self.config.expires_at = datetime.now() + timedelta(days=30)
         
-        # Use config base_dir or fallback to local directory
+        # Use config base_dir if provided, otherwise fallback to local directory
         if self.config.base_dir:
             self.base_dir = self.config.base_dir
         else:

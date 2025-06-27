@@ -50,7 +50,8 @@ class TestProject:
     
     def test_project_creation(self, temp_dir):
         """Test creating a new project"""
-        project = Project()
+        config = ProjectConfig(base_dir=temp_dir)
+        project = Project(config)
         
         assert project.project_id is not None
         assert project.project_dir.exists()
@@ -58,6 +59,7 @@ class TestProject:
         assert (project.project_dir / "outputs").exists()
         assert (project.project_dir / "temp").exists()
         assert (project.project_dir / "logs").exists()
+        assert project.project_dir.parent == temp_dir
     
     def test_project_with_config(self, temp_dir, sample_project_config):
         """Test creating project with config"""
@@ -68,10 +70,12 @@ class TestProject:
         assert project.name == "Test Project"
         assert project.description == "A test project"
         assert project.status == "created"
+        assert project.project_dir.parent == temp_dir
     
     def test_project_token_generation(self, temp_dir):
         """Test project token generation"""
-        project = Project()
+        config = ProjectConfig(base_dir=temp_dir)
+        project = Project(config)
         
         # Token should be available for new projects
         token = project.token
@@ -83,7 +87,8 @@ class TestProject:
     
     def test_project_token_validation(self, temp_dir):
         """Test project token validation"""
-        project = Project()
+        config = ProjectConfig(base_dir=temp_dir)
+        project = Project(config)
         token = project.token
         
         # Valid token
@@ -97,8 +102,7 @@ class TestProject:
     def test_project_expiration(self, temp_dir):
         """Test project expiration"""
         # Create project with short expiration
-        config = ProjectConfig(expires_at=datetime.now() - timedelta(hours=1))
-        config.base_dir = temp_dir
+        config = ProjectConfig(expires_at=datetime.now() - timedelta(hours=1), base_dir=temp_dir)
         project = Project(config)
         
         assert project.is_expired() is True
@@ -106,8 +110,7 @@ class TestProject:
     
     def test_project_extension(self, temp_dir):
         """Test project expiration extension"""
-        config = ProjectConfig(expires_at=datetime.now() + timedelta(hours=1))
-        config.base_dir = temp_dir
+        config = ProjectConfig(expires_at=datetime.now() + timedelta(hours=1), base_dir=temp_dir)
         project = Project(config)
         
         original_expiry = project.config.expires_at
@@ -117,7 +120,8 @@ class TestProject:
     
     def test_project_metadata(self, temp_dir):
         """Test project metadata operations"""
-        project = Project()
+        config = ProjectConfig(base_dir=temp_dir)
+        project = Project(config)
         
         # Add metadata
         project.add_metadata("key1", "value1")
@@ -130,7 +134,8 @@ class TestProject:
     
     def test_project_public_private(self, temp_dir):
         """Test project public/private functionality"""
-        project = Project()
+        config = ProjectConfig(base_dir=temp_dir)
+        project = Project(config)
         
         # Default should be private
         assert project.is_public() is False
@@ -147,7 +152,8 @@ class TestProject:
     
     def test_project_archive_creation(self, temp_dir):
         """Test project archive creation"""
-        project = Project()
+        config = ProjectConfig(base_dir=temp_dir)
+        project = Project(config)
         
         # Create some test files
         test_file = project.project_dir / "outputs" / "test.txt"
@@ -162,7 +168,8 @@ class TestProject:
     
     def test_project_cleanup(self, temp_dir):
         """Test project cleanup"""
-        project = Project()
+        config = ProjectConfig(base_dir=temp_dir)
+        project = Project(config)
         project_dir = project.project_dir
         
         assert project_dir.exists()
@@ -172,13 +179,15 @@ class TestProject:
     def test_project_load(self, temp_dir):
         """Test loading existing project"""
         # Create a project first
-        original_project = Project()
+        config = ProjectConfig(base_dir=temp_dir)
+        original_project = Project(config)
         project_id = original_project.project_id
         
         # Load the project
         loaded_project = Project.load(project_id, temp_dir)
         
         assert loaded_project.project_id == project_id
+        assert loaded_project.project_dir.parent == temp_dir
 
 
 class TestProjectManager:
@@ -202,6 +211,7 @@ class TestProjectManager:
         assert project.name == "Test Project"
         assert project.description == "A test project"
         assert project.project_id in project_manager.projects
+        assert project.project_dir.parent == project_manager.base_dir
     
     def test_get_project(self, project_manager):
         """Test getting a project"""

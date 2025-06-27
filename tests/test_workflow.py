@@ -17,12 +17,12 @@ def workflow_manager(service_registry, tmp_path):
 class TestWorkflowManager:
     """Test WorkflowManager functionality"""
     
-    def test_workflow_manager_initialization(self, service_registry, tmp_path):
+    def test_workflow_manager_initialization(self, service_registry, temp_dir):
         """Test WorkflowManager initialization"""
-        workflow_manager = WorkflowManager(service_registry, tmp_path)
+        workflow_manager = WorkflowManager(service_registry, temp_dir)
         
         assert workflow_manager.registry == service_registry
-        assert workflow_manager.project_dir == tmp_path
+        assert workflow_manager.project_dir == temp_dir
     
     @pytest.mark.asyncio
     async def test_execute_workflow_and_get_transaction(self, workflow_manager, service_registry):
