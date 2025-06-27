@@ -8,6 +8,8 @@ wheels/
 *.lock
 # Virtual environments
 .venv
+.coverage 
+.pytest_cache/
 
 demo/downloads
 demo/projects

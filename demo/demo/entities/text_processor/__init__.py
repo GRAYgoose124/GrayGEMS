@@ -1,1 +1,1 @@
-# Demo text processor entity 
+# Demo text processor entity

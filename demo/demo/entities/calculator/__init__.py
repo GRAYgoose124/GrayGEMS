@@ -1,1 +1,1 @@
-# Demo calculator entity 
+# Demo calculator entity

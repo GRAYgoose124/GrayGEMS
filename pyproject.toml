@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "GrayGEMS - A modular workflow execution framework"
 readme = "README.md"
 authors = [
-    {name = "Grayson", email = "grayson@example.com"},
+    {name = "Grayson Miller", email = "grayson.miller124@gmail.com"},
 ]
 license = {text = "MIT"}
 requires-python = ">=3.8"
@@ -35,13 +35,14 @@ dev = [
     "black>=23.0.0",
     "isort>=5.0.0",
     "flake8",
-    "pytest-asyncio"
+    "pytest-asyncio",
+    "coverage"
 ]
 
 [project.urls]
-Homepage = "https://github.com/grayson/graygems"
-Repository = "https://github.com/grayson/graygems"
-Issues = "https://github.com/grayson/graygems/issues"
+Homepage = "https://github.com/GRAYgoose124/graygems"
+Repository = "https://github.com/GRAYgoose124/graygems"
+Issues = "https://github.com/GRAYgoose124/graygems/issues"
 
 [tool.setuptools.packages.find]
 include = ["graygems*"]

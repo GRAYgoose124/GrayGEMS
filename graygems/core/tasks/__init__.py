@@ -1,1 +1,1 @@
-# Core tasks package 
+# Core tasks package

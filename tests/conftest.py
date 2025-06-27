@@ -15,7 +15,12 @@ from graygems.core.project_manager import ProjectManager
 from graygems.core.workflow import WorkflowManager
 from graygems.core.project import Project, ProjectConfig
 from graygems.core.service import Service, Task
-from graygems.core.models import FileUtilsInput, FileUtilsOutput, DataProcessorInput, DataProcessorOutput
+from graygems.core.models import (
+    FileUtilsInput,
+    FileUtilsOutput,
+    DataProcessorInput,
+    DataProcessorOutput,
+)
 
 
 @pytest.fixture
@@ -38,7 +43,7 @@ def test_config_data():
         "settings": {
             "default_expiration_days": 30,
             "max_projects_per_user": 100,
-            "auto_cleanup_expired": True
+            "auto_cleanup_expired": True,
         },
         "entities": {
             "calculator": {
@@ -52,9 +57,9 @@ def test_config_data():
                         "input_model": "MathInput",
                         "output_model": "MathOutput",
                         "task_func": "add",
-                        "dependencies": []
+                        "dependencies": [],
                     }
-                }
+                },
             }
         },
         "core_services": {
@@ -67,11 +72,11 @@ def test_config_data():
                         "enabled": True,
                         "description": "Process file operations",
                         "input_model": "FileUtilsInput",
-                        "output_model": "FileUtilsOutput"
+                        "output_model": "FileUtilsOutput",
                     }
-                }
+                },
             }
-        }
+        },
     }
 
 
@@ -127,8 +132,8 @@ def sample_project_config():
         metadata={
             "name": "Test Project",
             "description": "A test project",
-            "status": "created"
-        }
+            "status": "created",
+        },
     )
 
 
@@ -142,15 +147,15 @@ def sample_workflow_data():
                 "service": "calculator.math",
                 "task": "add",
                 "inputs": {"a": 5, "b": 3},
-                "dependencies": []
+                "dependencies": [],
             },
             "multiply": {
                 "service": "calculator.math",
                 "task": "multiply",
                 "inputs": {"a": "$add.result", "b": 2},
-                "dependencies": ["add"]
-            }
-        }
+                "dependencies": ["add"],
+            },
+        },
     }
 
 
@@ -164,9 +169,9 @@ def valid_api_request():
                 "inputs": {
                     "operation": "write",
                     "source_path": "test.txt",
-                    "content": "Hello World"
+                    "content": "Hello World",
                 },
-                "given_name": "write_test"
+                "given_name": "write_test",
             }
         ]
     }
@@ -180,7 +185,7 @@ def invalid_api_request():
             {
                 "service": "nonexistent_service",
                 "inputs": {"invalid": "data"},
-                "given_name": "invalid_test"
+                "given_name": "invalid_test",
             }
         ]
     }
@@ -190,9 +195,7 @@ def invalid_api_request():
 def file_utils_input():
     """Valid FileUtilsInput for testing"""
     return FileUtilsInput(
-        operation="write",
-        source_path="test.txt",
-        content="Test content"
+        operation="write", source_path="test.txt", content="Test content"
     )
 
 
@@ -202,13 +205,13 @@ def data_processor_input():
     return DataProcessorInput(
         operation="filter",
         data={"key1": "value1", "key2": "value2"},
-        parameters={"key": "key1", "value": "value1"}
+        parameters={"key": "key1", "value": "value1"},
     )
 
 
 class AsyncMock(Mock):
     """Mock that supports async/await"""
-    
+
     async def __call__(self, *args, **kwargs):
         return super().__call__(*args, **kwargs)
 
@@ -218,4 +221,4 @@ def async_task():
     """Create an async mock task for testing"""
     task = AsyncMock(spec=Task)
     task.execute = AsyncMock()
-    return task 
+    return task

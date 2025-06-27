@@ -11,6 +11,7 @@ from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
 
+
 class ProjectConfig(BaseModel):
     project_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     base_dir: Optional[Path] = None
@@ -21,20 +22,21 @@ class ProjectConfig(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     is_public: bool = False  # Whether the project is publicly accessible
 
+
 class Project:
     def __init__(self, config: Optional[ProjectConfig] = None):
         self.config = config or ProjectConfig()
         self.project_id = self.config.project_id
-        
+
         # Generate token if not provided
         if not self.config.token_hash and not self.config.plain_token:
             self.config.plain_token = self._generate_token()
             self.config.token_hash = self._hash_token(self.config.plain_token)
-        
+
         # Set expiration if not provided (default 30 days)
         if not self.config.expires_at:
             self.config.expires_at = datetime.now() + timedelta(days=30)
-        
+
         # Use config base_dir if provided, otherwise fallback to local directory
         if self.config.base_dir:
             self.base_dir = self.config.base_dir
@@ -47,46 +49,46 @@ class Project:
             except (PermissionError, OSError):
                 # Fallback to temp directory
                 self.base_dir = Path(tempfile.gettempdir()) / "graygems" / "projects"
-        
+
         self.project_dir = self.base_dir / self.project_id
         self._initialize()
-    
+
     @property
     def name(self) -> str:
         """Get project name from metadata"""
         return self.config.metadata.get("name", "Unnamed Project")
-    
+
     @property
     def description(self) -> str:
         """Get project description from metadata"""
         return self.config.metadata.get("description", "")
-    
+
     @property
     def status(self) -> str:
         """Get project status from metadata"""
         return self.config.metadata.get("status", "unknown")
-    
+
     @property
     def token(self) -> str:
         """Get project token (only available for new projects)"""
         if self.config.plain_token:
             return self.config.plain_token
         raise ValueError("Token not available for loaded projects (security)")
-    
+
     @property
     def created_at(self) -> datetime:
         """Get project creation time"""
         return self.config.created_at
-    
+
     def _generate_token(self) -> str:
         """Generate a secure token for project access"""
         # Use secrets for cryptographically secure random token
         return secrets.token_urlsafe(32)
-    
+
     def _hash_token(self, token: str) -> str:
         """Hash a token for secure storage"""
         return hashlib.sha256(token.encode()).hexdigest()
-    
+
     def _initialize(self):
         """Create project directory structure"""
         try:
@@ -95,7 +97,7 @@ class Project:
             (self.project_dir / "outputs").mkdir(exist_ok=True)
             (self.project_dir / "temp").mkdir(exist_ok=True)
             (self.project_dir / "logs").mkdir(exist_ok=True)
-            
+
             # Save project metadata
             self._save_metadata()
         except (PermissionError, OSError) as e:
@@ -107,7 +109,7 @@ class Project:
             (self.project_dir / "temp").mkdir(exist_ok=True)
             (self.project_dir / "logs").mkdir(exist_ok=True)
             self._save_metadata()
-    
+
     def _save_metadata(self):
         """Save project metadata to file"""
         metadata_file = self.project_dir / "project.json"
@@ -115,58 +117,64 @@ class Project:
             "project_id": self.project_id,
             "token_hash": self.config.token_hash,  # Store hash instead of plain token
             "created_at": self.config.created_at.isoformat(),
-            "expires_at": self.config.expires_at.isoformat() if self.config.expires_at else None,
+            "expires_at": (
+                self.config.expires_at.isoformat() if self.config.expires_at else None
+            ),
             "metadata": self.config.metadata,
-            "is_public": self.config.is_public
+            "is_public": self.config.is_public,
         }
-        
+
         import json
-        with open(metadata_file, 'w') as f:
+
+        with open(metadata_file, "w") as f:
             json.dump(metadata, f, indent=2)
-    
+
     def _load_metadata(self) -> Dict[str, Any]:
         """Load project metadata from file"""
         metadata_file = self.project_dir / "project.json"
         if metadata_file.exists():
             import json
-            with open(metadata_file, 'r') as f:
+
+            with open(metadata_file, "r") as f:
                 return json.load(f)
         return {}
-    
+
     def validate_token(self, token: str) -> bool:
         """Validate if the provided token is valid for this project"""
         # Public projects don't require token validation
         if self.config.is_public:
             return True
-        
+
         if not token or not self.config.token_hash:
             return False
-        
+
         # Hash the provided token and compare with stored hash
         provided_hash = self._hash_token(token)
         if provided_hash != self.config.token_hash:
             return False
-        
+
         # Check if project has expired
         if self.config.expires_at and datetime.now() > self.config.expires_at:
             return False
-        
+
         return True
-    
+
     def is_expired(self) -> bool:
         """Check if the project has expired"""
         if not self.config.expires_at:
             return False
         return datetime.now() > self.config.expires_at
-    
+
     def extend_expiration(self, days: int = 30):
         """Extend project expiration"""
         if self.config.expires_at:
-            self.config.expires_at = max(self.config.expires_at, datetime.now()) + timedelta(days=days)
+            self.config.expires_at = max(
+                self.config.expires_at, datetime.now()
+            ) + timedelta(days=days)
         else:
             self.config.expires_at = datetime.now() + timedelta(days=days)
         self._save_metadata()
-    
+
     def get_info(self) -> Dict[str, Any]:
         """Get project information"""
         return {
@@ -175,74 +183,81 @@ class Project:
             "description": self.description,
             "status": self.status,
             "created_at": self.config.created_at.isoformat(),
-            "expires_at": self.config.expires_at.isoformat() if self.config.expires_at else None,
+            "expires_at": (
+                self.config.expires_at.isoformat() if self.config.expires_at else None
+            ),
             "is_expired": self.is_expired(),
             "is_public": self.config.is_public,
             "project_dir": str(self.project_dir),
-            "metadata": self.config.metadata
+            "metadata": self.config.metadata,
         }
-    
+
     def create_archive(self) -> Path:
         """Package project directory into ZIP archive"""
         try:
             # Ensure project directory exists
             if not self.project_dir.exists():
-                raise FileNotFoundError(f"Project directory does not exist: {self.project_dir}")
-            
+                raise FileNotFoundError(
+                    f"Project directory does not exist: {self.project_dir}"
+                )
+
             # Create archive path
             try:
                 archive_path = self.base_dir / f"{self.project_id}.zip"
                 archive_path.parent.mkdir(parents=True, exist_ok=True)
             except (PermissionError, OSError):
                 # Fallback to temp directory for archive
-                archive_path = Path(tempfile.gettempdir()) / "graygems" / f"{self.project_id}.zip"
+                archive_path = (
+                    Path(tempfile.gettempdir()) / "graygems" / f"{self.project_id}.zip"
+                )
                 archive_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             # Create the ZIP archive
-            with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 file_count = 0
                 total_size = 0
-                
-                for file_path in self.project_dir.rglob('*'):
+
+                for file_path in self.project_dir.rglob("*"):
                     if file_path.is_file():
                         arcname = file_path.relative_to(self.project_dir)
                         zf.write(file_path, arcname)
                         file_count += 1
                         total_size += file_path.stat().st_size
-                
+
                 # Add metadata about the archive
                 metadata = {
                     "project_id": self.project_id,
                     "created_at": datetime.now().isoformat(),
                     "file_count": file_count,
                     "total_size": total_size,
-                    "archive_version": "1.0"
+                    "archive_version": "1.0",
                 }
-                
+
                 # Write metadata as a JSON file in the archive
                 import json
+
                 metadata_content = json.dumps(metadata, indent=2)
                 zf.writestr("archive_metadata.json", metadata_content)
-            
+
             # Verify the archive was created successfully
             if not archive_path.exists():
                 raise RuntimeError("Archive file was not created")
-            
+
             archive_size = archive_path.stat().st_size
             if archive_size == 0:
                 raise RuntimeError("Archive file is empty")
-            
+
             return archive_path
-            
+
         except Exception as e:
             # Clean up any partial archive
-            if 'archive_path' in locals() and archive_path.exists():
+            if "archive_path" in locals() and archive_path.exists():
                 try:
                     archive_path.unlink()
                 except:
                     pass
             raise RuntimeError(f"Failed to create project archive: {str(e)}")
-    
+
     def cleanup(self):
         """Remove project directory"""
         try:
@@ -251,44 +266,50 @@ class Project:
         except (PermissionError, OSError):
             # If we can't remove the directory, just log it
             pass
-    
+
     def add_metadata(self, key: str, value: Any):
         """Add metadata to the project"""
         self.config.metadata[key] = value
         self._save_metadata()
-    
+
     def get_metadata(self, key: str, default: Any = None) -> Any:
         """Get metadata from the project"""
         return self.config.metadata.get(key, default)
-    
+
     def is_public(self) -> bool:
         """Check if the project is publicly accessible"""
         return self.config.is_public
-    
+
     def make_public(self):
         """Make the project publicly accessible"""
         self.config.is_public = True
         self._save_metadata()
-    
+
     def make_private(self):
         """Make the project private (requires token)"""
         self.config.is_public = False
         self._save_metadata()
-    
+
     @classmethod
     def load(cls, project_id: str, base_dir: Optional[Path] = None) -> "Project":
         """Load existing project"""
         config = ProjectConfig(project_id=project_id, base_dir=base_dir)
         project = cls(config)
-        
+
         # Load metadata from file
         metadata = project._load_metadata()
         if metadata:
-            project.config.token_hash = metadata.get("token_hash")  # Load hash instead of plain token
-            project.config.created_at = datetime.fromisoformat(metadata.get("created_at", datetime.now().isoformat()))
+            project.config.token_hash = metadata.get(
+                "token_hash"
+            )  # Load hash instead of plain token
+            project.config.created_at = datetime.fromisoformat(
+                metadata.get("created_at", datetime.now().isoformat())
+            )
             if metadata.get("expires_at"):
-                project.config.expires_at = datetime.fromisoformat(metadata["expires_at"])
+                project.config.expires_at = datetime.fromisoformat(
+                    metadata["expires_at"]
+                )
             project.config.metadata = metadata.get("metadata", {})
             project.config.is_public = metadata.get("is_public", False)
-        
+
         return project
