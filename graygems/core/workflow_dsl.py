@@ -229,43 +229,76 @@ class WorkflowDSL:
         """Generate a unique key for a block to avoid duplicates"""
         return f"{block_type}:{hash(content)}"
 
-    def _parse_workflow_recursive(self, lines: List[str], start_idx: int = 0, known_steps: set = None) -> Tuple[Dict[str, Any], List[str], int]:
-        """Recursive workflow parser that tracks known step names for reference resolution."""
+    def _parse_workflow_recursive(self, lines: List[str], start_idx: int = 0, known_steps: set = None, parent_path: str = "", local_to_full_id: dict = None) -> Tuple[Dict[str, Any], List[str], int, dict]:
+        """Recursive workflow parser that tracks known step names for reference resolution and generates unique step IDs."""
         if known_steps is None:
             known_steps = set()
+        if local_to_full_id is None:
+            local_to_full_id = {}
         steps = {}
         top_level_ids = []
         i = start_idx
+        current_local_to_full_id = local_to_full_id.copy()
         while i < len(lines):
             line = lines[i]
             stripped = line.lstrip()
             if stripped.startswith("step "):
                 step_id, step_config = self._parse_service_step(stripped, known_steps=known_steps)
-                steps[step_id] = step_config
-                top_level_ids.append(step_id)
-                known_steps.add(step_id)
+                full_step_id = f"{parent_path}.{step_id}" if parent_path else step_id
+                # Update mapping
+                current_local_to_full_id[step_id] = full_step_id
+                # Rewrite input references to use full IDs
+                step_config["inputs"] = self._rewrite_input_references(step_config["inputs"], current_local_to_full_id)
+                steps[full_step_id] = step_config
+                top_level_ids.append(full_step_id)
+                known_steps.add(full_step_id)
                 i += 1
             elif stripped.startswith("for "):
-                loop_steps, loop_ids, next_idx = self._parse_loop_recursive(lines, i, known_steps=known_steps)
-                steps.update(loop_steps)
-                top_level_ids.extend(loop_ids)
+                loop_step, loop_id, next_idx, updated_mapping = self._parse_loop_recursive(lines, i, known_steps=known_steps, parent_path=parent_path, local_to_full_id=current_local_to_full_id.copy())
+                steps[loop_id] = loop_step
+                top_level_ids.append(loop_id)
+                # Update the mapping with any new steps from the loop
+                current_local_to_full_id.update(updated_mapping)
                 i = next_idx
             elif stripped.startswith("if "):
-                cond_steps, cond_ids, next_idx = self._parse_condition_recursive(lines, i, known_steps=known_steps)
-                steps.update(cond_steps)
-                top_level_ids.extend(cond_ids)
+                cond_step, cond_id, next_idx, updated_mapping = self._parse_condition_recursive(lines, i, known_steps=known_steps, parent_path=parent_path, local_to_full_id=current_local_to_full_id.copy())
+                steps[cond_id] = cond_step
+                top_level_ids.append(cond_id)
+                # Update the mapping with any new steps from the condition
+                current_local_to_full_id.update(updated_mapping)
                 i = next_idx
             elif stripped == "parallel:":
-                parallel_steps, parallel_ids, next_idx = self._parse_parallel_recursive(lines, i, known_steps=known_steps)
-                steps.update(parallel_steps)
-                top_level_ids.extend(parallel_ids)
+                parallel_step, parallel_id, next_idx, updated_mapping = self._parse_parallel_recursive(lines, i, known_steps=known_steps, parent_path=parent_path, local_to_full_id=current_local_to_full_id.copy())
+                steps[parallel_id] = parallel_step
+                top_level_ids.append(parallel_id)
+                # Update the mapping with any new steps from the parallel block
+                current_local_to_full_id.update(updated_mapping)
                 i = next_idx
             else:
                 i += 1
-        return steps, top_level_ids, i
+        return steps, top_level_ids, i, current_local_to_full_id
 
-    def _parse_loop_recursive(self, lines: List[str], start_idx: int, known_steps: set = None) -> Tuple[Dict[str, Any], List[str], int]:
-        """Parse a loop block recursively, passing known_steps for reference resolution."""
+    def _rewrite_input_references(self, inputs: dict, local_to_full_id: dict) -> dict:
+        """Rewrite step references in inputs to use the full unique step ID."""
+        new_inputs = {}
+        for k, v in inputs.items():
+            if isinstance(v, str):
+                # Match $step.field or step.field
+                m = re.match(r"^\$?([a-zA-Z_][a-zA-Z0-9_]*)\.(.+)$", v)
+                if m:
+                    local_step = m.group(1)
+                    rest = m.group(2)
+                    if local_step in local_to_full_id:
+                        new_inputs[k] = f"${local_to_full_id[local_step]}.{rest}"
+                    else:
+                        new_inputs[k] = v
+                else:
+                    new_inputs[k] = v
+            else:
+                new_inputs[k] = v
+        return new_inputs
+
+    def _parse_loop_recursive(self, lines: List[str], start_idx: int, known_steps: set = None, parent_path: str = "", local_to_full_id: dict = None) -> Tuple[Dict[str, Any], str, int, dict]:
         loop_line = lines[start_idx]
         loop_match = re.match(r"for\s+(\w+)\s+in\s+(.+)", loop_line.lstrip())
         if not loop_match:
@@ -275,23 +308,19 @@ class WorkflowDSL:
         if collection.endswith(":"):
             collection = collection[:-1].strip()
         block_lines, next_idx = self._extract_block(lines, start_idx)
-        # Recursively parse the loop body
-        body_steps, body_ids, _ = self._parse_workflow_recursive(block_lines, 0, known_steps=known_steps.copy())
-        loop_step_id = f"loop_{self.loop_counter}"
+        loop_step_id = f"{parent_path}.loop_{self.loop_counter}" if parent_path else f"loop_{self.loop_counter}"
         self.loop_counter += 1
+        body_steps, _, _, local_to_full_id_new = self._parse_workflow_recursive(block_lines, 0, known_steps=known_steps.copy(), parent_path=loop_step_id, local_to_full_id=local_to_full_id.copy())
         loop_config = {
             "type": "loop",
             "variable": var_name,
             "collection": collection,
-            "steps": body_ids,
+            "steps": body_steps,
             "dependencies": [],
         }
-        all_steps = {loop_step_id: loop_config}
-        all_steps.update(body_steps)
-        return all_steps, [loop_step_id], next_idx
+        return loop_config, loop_step_id, next_idx, local_to_full_id_new
 
-    def _parse_condition_recursive(self, lines: List[str], start_idx: int, known_steps: set = None) -> Tuple[Dict[str, Any], List[str], int]:
-        """Parse a condition block recursively, passing known_steps for reference resolution."""
+    def _parse_condition_recursive(self, lines: List[str], start_idx: int, known_steps: set = None, parent_path: str = "", local_to_full_id: dict = None) -> Tuple[Dict[str, Any], str, int, dict]:
         condition_line = lines[start_idx]
         condition_match = re.match(r"if\s+(.+):", condition_line.lstrip())
         if not condition_match:
@@ -305,71 +334,212 @@ class WorkflowDSL:
             if line.lstrip() == "else:":
                 else_pos = i
                 break
+        cond_step_id = f"{parent_path}.condition_{self.condition_counter}" if parent_path else f"condition_{self.condition_counter}"
+        self.condition_counter += 1
         if_section_lines = block_lines[:else_pos] if else_pos != -1 else block_lines
-        if_steps, if_ids, _ = self._parse_workflow_recursive(if_section_lines, 0, known_steps=known_steps.copy())
-        else_steps, else_ids = {}, []
+        if_steps_dict, if_step_ids, _, local_to_full_id_if = self._parse_workflow_recursive(if_section_lines, 0, known_steps=known_steps.copy(), parent_path=f"{cond_step_id}.if_steps", local_to_full_id=local_to_full_id.copy())
+        else_steps_dict = {}
+        else_step_ids = []
+        local_to_full_id_else = local_to_full_id_if.copy()  # Use the updated mapping from if_steps
         if else_pos != -1:
             else_section_lines = block_lines[else_pos + 1:]
-            else_steps, else_ids, _ = self._parse_workflow_recursive(else_section_lines, 0, known_steps=known_steps.copy())
-        condition_step_id = f"condition_{self.condition_counter}"
-        self.condition_counter += 1
+            else_steps_dict, else_step_ids, _, local_to_full_id_else = self._parse_workflow_recursive(else_section_lines, 0, known_steps=known_steps.copy(), parent_path=f"{cond_step_id}.else_steps", local_to_full_id=local_to_full_id_if.copy())
+        
+        # Rewrite step references in the condition using the updated mapping
+        rewritten_condition = self._rewrite_condition_references(condition, local_to_full_id_if)
+        
         condition_config = {
             "type": "condition",
-            "condition": condition,
-            "if_steps": if_ids,
-            "else_steps": else_ids,
+            "condition": rewritten_condition,
+            "if_steps": if_step_ids,
+            "else_steps": else_step_ids,
+            "if_steps_dict": if_steps_dict,  # Keep for nested structure
+            "else_steps_dict": else_steps_dict,  # Keep for nested structure
             "dependencies": [],
         }
-        all_steps = {condition_step_id: condition_config}
-        all_steps.update(if_steps)
-        all_steps.update(else_steps)
-        return all_steps, [condition_step_id], next_idx
+        return condition_config, cond_step_id, next_idx, local_to_full_id_else
 
-    def _parse_parallel_recursive(self, lines: List[str], start_idx: int, known_steps: set = None) -> Tuple[Dict[str, Any], List[str], int]:
-        """Parse a parallel block recursively, passing known_steps for reference resolution."""
+    def _rewrite_condition_references(self, condition: str, local_to_full_id: dict) -> str:
+        """Rewrite step references in condition expressions to use full step IDs"""
+        # Match step.field pattern
+        m = re.match(r"^([a-zA-Z_][a-zA-Z0-9_]*)\.(.+)$", condition)
+        if m:
+            local_step = m.group(1)
+            rest = m.group(2)
+            if local_step in local_to_full_id:
+                return f"{local_to_full_id[local_step]}.{rest}"
+        return condition
+
+    def _parse_parallel_recursive(self, lines: List[str], start_idx: int, known_steps: set = None, parent_path: str = "", local_to_full_id: dict = None) -> Tuple[Dict[str, Any], str, int, dict]:
         block_lines, next_idx = self._extract_block(lines, start_idx)
-        body_steps, body_ids, _ = self._parse_workflow_recursive(block_lines, 0, known_steps=known_steps.copy())
-        parallel_step_id = f"parallel_{self.parallel_counter}"
+        parallel_step_id = f"{parent_path}.parallel_{self.parallel_counter}" if parent_path else f"parallel_{self.parallel_counter}"
         self.parallel_counter += 1
+        body_steps, _, _, local_to_full_id_new = self._parse_workflow_recursive(block_lines, 0, known_steps=known_steps.copy(), parent_path=parallel_step_id, local_to_full_id=local_to_full_id.copy())
         parallel_config = {
             "type": "parallel",
-            "steps": body_ids,
+            "steps": body_steps,
             "dependencies": [],
         }
-        all_steps = {parallel_step_id: parallel_config}
-        all_steps.update(body_steps)
-        return all_steps, [parallel_step_id], next_idx
+        return parallel_config, parallel_step_id, next_idx, local_to_full_id_new
 
     def _calculate_dependencies(self, steps: Dict[str, Any]) -> Dict[str, List[str]]:
-        """Calculate dependencies between steps based on input references"""
+        """Calculate dependencies between steps based on input references in nested structure"""
         dependencies = {}
         
-        for step_id, step_config in steps.items():
-            if step_config.get("type") != "service":
-                dependencies[step_id] = []
-                continue
+        # First, collect all step IDs that exist in the workflow (including nested ones)
+        all_step_ids = set()
+        
+        def collect_step_ids(steps_dict: Dict[str, Any]):
+            """Recursively collect all step IDs"""
+            for step_id, step_config in steps_dict.items():
+                all_step_ids.add(step_id)
+                # Recursively collect from nested steps
+                if step_config.get("type") == "condition":
+                    if "if_steps_dict" in step_config:
+                        collect_step_ids(step_config["if_steps_dict"])
+                    if "else_steps_dict" in step_config:
+                        collect_step_ids(step_config["else_steps_dict"])
+                elif step_config.get("type") in ["parallel", "loop"]:
+                    if "steps" in step_config:
+                        collect_step_ids(step_config["steps"])
+        
+        collect_step_ids(steps)
+        
+        # Debug: print all collected step IDs
+        print("DEBUG - All collected step IDs:")
+        for step_id in sorted(all_step_ids):
+            print(f"  {step_id}")
+        
+        # Build a mapping from nested step IDs to their parent block IDs
+        step_to_parent = {}
+        
+        def build_parent_mapping(steps_dict: Dict[str, Any], parent_id: str = None):
+            """Build mapping from step IDs to their parent block IDs"""
+            for step_id, step_config in steps_dict.items():
+                if parent_id:
+                    step_to_parent[step_id] = parent_id
                 
-            deps = []
-            inputs = step_config.get("inputs", {})
+                # Recursively build mapping for nested steps
+                if step_config.get("type") == "condition":
+                    if "if_steps_dict" in step_config:
+                        build_parent_mapping(step_config["if_steps_dict"], step_id)
+                    if "else_steps_dict" in step_config:
+                        build_parent_mapping(step_config["else_steps_dict"], step_id)
+                elif step_config.get("type") in ["parallel", "loop"]:
+                    if "steps" in step_config:
+                        build_parent_mapping(step_config["steps"], step_id)
+        
+        build_parent_mapping(steps)
+        
+        def calculate_deps_recursive(steps_dict: Dict[str, Any]) -> Dict[str, List[str]]:
+            """Recursively calculate dependencies for nested steps"""
+            deps = {}
             
-            for input_value in inputs.values():
-                # Look for references to other step results
-                if isinstance(input_value, str):
-                    # Handle both formats: step.field and $step.field
-                    if input_value.startswith("$"):
-                        # Remove $ prefix and check for step.field pattern
-                        ref_value = input_value[1:]
-                        if "." in ref_value:
-                            ref_step = ref_value.split(".")[0]
-                            if ref_step in steps:
-                                deps.append(ref_step)
-                    elif "." in input_value:
-                        # Original format: step.field
-                        ref_step = input_value.split(".")[0]
-                        if ref_step in steps:
-                            deps.append(ref_step)
+            for step_id, step_config in steps_dict.items():
+                if step_config.get("type") == "service":
+                    # Calculate dependencies for service steps
+                    step_deps = []
+                    inputs = step_config.get("inputs", {})
+                    
+                    for input_value in inputs.values():
+                        # Look for references to other step results
+                        if isinstance(input_value, str):
+                            # Handle both formats: step.field and $step.field
+                            if input_value.startswith("$"):
+                                # Remove $ prefix and check for step.field pattern
+                                ref_value = input_value[1:]
+                                if "." in ref_value:
+                                    # Use everything before the last dot as the step ID
+                                    ref_step = ref_value.rsplit(".", 1)[0]
+                                    if ref_step in all_step_ids:
+                                        # Check if the referenced step is inside a block
+                                        if ref_step in step_to_parent:
+                                            # Use the parent block as the dependency
+                                            parent_block = step_to_parent[ref_step]
+                                            step_deps.append(parent_block)
+                                            print(f"DEBUG - Added nested dependency: {step_id} -> {parent_block} (via {ref_step})")
+                                        else:
+                                            # Direct dependency
+                                            step_deps.append(ref_step)
+                                            print(f"DEBUG - Added direct dependency: {step_id} -> {ref_step}")
+                                    else:
+                                        print(f"DEBUG - Missing dependency: {step_id} -> {ref_step} (not found in all_step_ids)")
+                            elif "." in input_value:
+                                # Original format: step.field
+                                ref_step = input_value.rsplit(".", 1)[0]
+                                if ref_step in all_step_ids:
+                                    # Check if the referenced step is inside a block
+                                    if ref_step in step_to_parent:
+                                        # Use the parent block as the dependency
+                                        parent_block = step_to_parent[ref_step]
+                                        step_deps.append(parent_block)
+                                        print(f"DEBUG - Added nested dependency: {step_id} -> {parent_block} (via {ref_step})")
+                                    else:
+                                        # Direct dependency
+                                        step_deps.append(ref_step)
+                                        print(f"DEBUG - Added direct dependency: {step_id} -> {ref_step}")
+                                else:
+                                    print(f"DEBUG - Missing dependency: {step_id} -> {ref_step} (not found in all_step_ids)")
+                    
+                    deps[step_id] = step_deps
+                    
+                elif step_config.get("type") == "condition":
+                    # Calculate dependencies for condition steps based on their condition expression
+                    condition = step_config.get("condition", "")
+                    step_deps = []
+                    
+                    # Look for step references in the condition (e.g., "step.field")
+                    if "." in condition:
+                        # Try to extract step ID from condition
+                        parts = condition.split(".")
+                        if len(parts) >= 2:
+                            # The step ID is everything before the last dot
+                            ref_step = ".".join(parts[:-1])
+                            if ref_step in all_step_ids:
+                                # Check if the referenced step is inside a block
+                                if ref_step in step_to_parent:
+                                    # Use the parent block as the dependency
+                                    parent_block = step_to_parent[ref_step]
+                                    step_deps.append(parent_block)
+                                    print(f"DEBUG - Added nested condition dependency: {step_id} -> {parent_block} (via {ref_step})")
+                                else:
+                                    # Direct dependency
+                                    step_deps.append(ref_step)
+                                    print(f"DEBUG - Added direct condition dependency: {step_id} -> {ref_step}")
+                    
+                    deps[step_id] = step_deps
+                    
+                    # Recursively calculate dependencies for nested steps
+                    if "if_steps_dict" in step_config:
+                        nested_deps = calculate_deps_recursive(step_config["if_steps_dict"])
+                        deps.update(nested_deps)
+                    if "else_steps_dict" in step_config:
+                        nested_deps = calculate_deps_recursive(step_config["else_steps_dict"])
+                        deps.update(nested_deps)
+                elif step_config.get("type") in ["parallel", "loop"]:
+                    # For blocks, calculate dependencies for their nested steps
+                    nested_steps = {}
+                    
+                    if step_config.get("type") == "condition":
+                        if "if_steps_dict" in step_config:
+                            nested_steps.update(step_config["if_steps_dict"])
+                        if "else_steps_dict" in step_config:
+                            nested_steps.update(step_config["else_steps_dict"])
+                    elif step_config.get("type") in ["parallel", "loop"]:
+                        if "steps" in step_config:
+                            nested_steps.update(step_config["steps"])
+                    
+                    # Recursively calculate dependencies for nested steps
+                    nested_deps = calculate_deps_recursive(nested_steps)
+                    deps.update(nested_deps)
+                    
+                    # Block itself has no dependencies
+                    deps[step_id] = []
             
-            dependencies[step_id] = deps
+            return deps
+        
+        # Calculate dependencies for the entire workflow
+        dependencies = calculate_deps_recursive(steps)
         
         return dependencies
 
@@ -404,17 +574,36 @@ class WorkflowDSL:
                 workflow_lines.append(line)
         
         # Parse workflow with full step knowledge
-        steps, _, _ = self._parse_workflow_recursive(workflow_lines, 0, known_steps=all_step_names)
+        steps, _, _, _ = self._parse_workflow_recursive(workflow_lines, 0, known_steps=all_step_names)
+        
+        # Calculate dependencies for the nested structure
         dependencies = self._calculate_dependencies(steps)
-        for step_id, deps in dependencies.items():
-            if step_id in steps:
-                steps[step_id]["dependencies"] = deps
+        
+        # Apply dependencies to the nested structure
+        self._apply_dependencies_recursive(steps, dependencies)
+        
         workflow = {
             "steps": steps,
             "variables": variables,
             "metadata": {"source": dsl_code, "compiled_at": "2024-01-01T00:00:00Z"},
         }
         return workflow
+    
+    def _apply_dependencies_recursive(self, steps: Dict[str, Any], dependencies: Dict[str, List[str]]):
+        """Recursively apply dependencies to the nested structure"""
+        for step_id, step_config in steps.items():
+            if step_id in dependencies:
+                step_config["dependencies"] = dependencies[step_id]
+            
+            # Recursively apply to nested steps
+            if step_config.get("type") == "condition":
+                if "if_steps_dict" in step_config:
+                    self._apply_dependencies_recursive(step_config["if_steps_dict"], dependencies)
+                if "else_steps_dict" in step_config:
+                    self._apply_dependencies_recursive(step_config["else_steps_dict"], dependencies)
+            elif step_config.get("type") in ["parallel", "loop"]:
+                if "steps" in step_config:
+                    self._apply_dependencies_recursive(step_config["steps"], dependencies)
 
 
 class WorkflowTemplate:

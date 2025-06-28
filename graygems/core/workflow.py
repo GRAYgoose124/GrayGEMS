@@ -221,13 +221,18 @@ class WorkflowManager:
     def _parse_workflow_steps(
         self, transaction: WorkflowTransaction, workflow_data: Dict[str, Any]
     ):
-        """Parse workflow data and create workflow steps"""
+        """Parse workflow data and create workflow steps from nested structure"""
         steps_data = workflow_data.get("steps", {})
         transaction.variables = workflow_data.get("variables", {})
-
+        
+        # Recursively parse the nested structure
+        self._parse_nested_steps(transaction, steps_data, parent_id=None)
+    
+    def _parse_nested_steps(self, transaction: WorkflowTransaction, steps_data: Dict[str, Any], parent_id: Optional[str] = None):
+        """Recursively parse nested steps and add them to the transaction"""
         for step_id, step_config in steps_data.items():
             step_type = step_config.get("type", "service")
-
+            
             if step_type == "service":
                 step = AdvancedWorkflowStep(
                     step_id=step_id,
@@ -237,6 +242,8 @@ class WorkflowManager:
                     inputs=step_config.get("inputs", {}),
                     dependencies=step_config.get("dependencies", []),
                 )
+                transaction.steps[step_id] = step
+                
             elif step_type == "condition":
                 step = AdvancedWorkflowStep(
                     step_id=step_id,
@@ -246,34 +253,51 @@ class WorkflowManager:
                     else_steps=step_config.get("else_steps", []),
                     dependencies=step_config.get("dependencies", []),
                 )
+                transaction.steps[step_id] = step
+                # Recursively parse nested steps (blocks)
+                if "if_steps_dict" in step_config:
+                    self._parse_nested_steps(transaction, step_config["if_steps_dict"], step_id)
+                if "else_steps_dict" in step_config:
+                    self._parse_nested_steps(transaction, step_config["else_steps_dict"], step_id)
+                # Always add all direct steps in if_steps and else_steps to the transaction
+                if "if_steps_dict" in step_config:
+                    for sub_id in step_config.get("if_steps", []):
+                        sub_step_config = step_config["if_steps_dict"].get(sub_id)
+                        if sub_step_config is not None:
+                            self._parse_nested_steps(transaction, {sub_id: sub_step_config}, step_id)
+                if "else_steps_dict" in step_config:
+                    for sub_id in step_config.get("else_steps", []):
+                        sub_step_config = step_config["else_steps_dict"].get(sub_id)
+                        if sub_step_config is not None:
+                            self._parse_nested_steps(transaction, {sub_id: sub_step_config}, step_id)
+                    
             elif step_type == "parallel":
                 step = AdvancedWorkflowStep(
                     step_id=step_id,
                     step_type=step_type,
-                    parallel_steps=step_config.get("steps", []),
+                    parallel_steps=list(step_config.get("steps", {}).keys()),
                     dependencies=step_config.get("dependencies", []),
                 )
+                transaction.steps[step_id] = step
+                
+                # Recursively parse nested steps
+                if "steps" in step_config:
+                    self._parse_nested_steps(transaction, step_config["steps"], step_id)
+                    
             elif step_type == "loop":
                 step = AdvancedWorkflowStep(
                     step_id=step_id,
                     step_type=step_type,
                     loop_variable=step_config.get("variable"),
                     loop_collection=step_config.get("collection"),
-                    loop_steps=step_config.get("steps", []),
+                    loop_steps=list(step_config.get("steps", {}).keys()),
                     dependencies=step_config.get("dependencies", []),
                 )
-            else:
-                # Default to service step
-                step = AdvancedWorkflowStep(
-                    step_id=step_id,
-                    step_type="service",
-                    service_name=step_config.get("service"),
-                    task_name=step_config.get("task"),
-                    inputs=step_config.get("inputs", {}),
-                    dependencies=step_config.get("dependencies", []),
-                )
-
-            transaction.steps[step_id] = step
+                transaction.steps[step_id] = step
+                
+                # Recursively parse nested steps
+                if "steps" in step_config:
+                    self._parse_nested_steps(transaction, step_config["steps"], step_id)
 
     async def execute_transaction(self, transaction_id: str) -> Dict[str, Any]:
         """Execute a workflow transaction"""
@@ -288,7 +312,7 @@ class WorkflowManager:
             transaction.status = "running"
             transaction.started_at = datetime.now()
 
-            # Execute steps in dependency order
+            # Execute steps by traversing the workflow tree recursively
             await self._execute_steps(transaction)
 
             transaction.status = "completed"
@@ -305,29 +329,59 @@ class WorkflowManager:
             raise
 
     async def _execute_steps(self, transaction: WorkflowTransaction):
-        """Execute workflow steps in dependency order with advanced features"""
-        # Build dependency graph
-        dependency_graph = self._build_dependency_graph(transaction.steps)
-
+        """Execute workflow steps by traversing the workflow tree recursively"""
+        # Find top-level steps (those not referenced by any other step)
+        all_referenced_steps = set()
+        for step in transaction.steps.values():
+            if step.step_type == "condition":
+                all_referenced_steps.update(step.if_steps)
+                all_referenced_steps.update(step.else_steps)
+            elif step.step_type == "parallel":
+                all_referenced_steps.update(step.parallel_steps)
+            elif step.step_type == "loop":
+                all_referenced_steps.update(step.loop_steps)
+        
+        top_level_steps = [step_id for step_id in transaction.steps.keys() 
+                          if step_id not in all_referenced_steps]
+        
+        # Debug: print all steps and their dependencies
+        print(f"DEBUG - Executing workflow with {len(transaction.steps)} steps:")
+        for step_id, step in transaction.steps.items():
+            print(f"DEBUG - Step {step_id}: type={step.step_type}, deps={step.dependencies}")
+        print(f"DEBUG - Top-level steps: {top_level_steps}")
+        
+        # Execute top-level steps in dependency order
+        await self._execute_step_list(transaction, top_level_steps)
+    
+    async def _execute_step_list(self, transaction: WorkflowTransaction, step_ids: List[str]):
+        """Execute a list of steps in dependency order"""
+        # Build dependency graph for these steps
+        dependency_graph = {}
+        for step_id in step_ids:
+            step = transaction.steps[step_id]
+            dependency_graph[step_id] = step.dependencies.copy()
+        
         # Execute steps in topological order
         executed_steps: Set[str] = set()
-
-        while len(executed_steps) < len(transaction.steps):
+        
+        while len(executed_steps) < len(step_ids):
             # Find steps that can be executed (all dependencies satisfied)
             ready_steps = [
                 step_id
-                for step_id, deps in dependency_graph.items()
+                for step_id in step_ids
                 if step_id not in executed_steps
-                and all(dep in executed_steps for dep in deps)
+                and all(dep in executed_steps for dep in dependency_graph[step_id])
             ]
-
+            
             if not ready_steps:
                 # Circular dependency or missing step
-                remaining = set(transaction.steps.keys()) - executed_steps
+                remaining = set(step_ids) - executed_steps
                 raise WorkflowError(
                     f"Circular dependency or missing step detected: {remaining}"
                 )
-
+            
+            print(f"DEBUG - Ready steps: {ready_steps}")
+            
             # Execute ready steps concurrently
             tasks = []
             for step_id in ready_steps:
@@ -335,11 +389,11 @@ class WorkflowManager:
                     self._execute_advanced_step(transaction, step_id)
                 )
                 tasks.append(task)
-
+            
             # Wait for all ready steps to complete
             results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            # Check for failures
+            
+            # Check for failures and mark steps as completed
             for step_id, result in zip(ready_steps, results):
                 if isinstance(result, Exception):
                     step = transaction.steps[step_id]
@@ -347,8 +401,9 @@ class WorkflowManager:
                     step.error = str(result)
                     step.end_time = datetime.now()
                     raise WorkflowError(f"Step {step_id} failed: {result}")
-
+                
                 executed_steps.add(step_id)
+                print(f"DEBUG - Completed step: {step_id}")
 
     async def _execute_advanced_step(
         self, transaction: WorkflowTransaction, step_id: str
@@ -390,6 +445,10 @@ class WorkflowManager:
 
         # Store resolved inputs in metadata for response
         step.metadata["resolved_inputs"] = resolved_inputs
+
+        # Debug: print inputs for validate tasks
+        if step.task_name == "validate":
+            print(f"DEBUG - Validate task inputs: {resolved_inputs}")
 
         # Get service and task
         service = self.registry.get_service(step.service_name)
@@ -456,9 +515,8 @@ class WorkflowManager:
             steps_to_execute = step.else_steps
 
         # Execute steps in the selected branch
-        for step_id in steps_to_execute:
-            if step_id in transaction.steps:
-                await self._execute_advanced_step(transaction, step_id)
+        if steps_to_execute:
+            await self._execute_step_list(transaction, steps_to_execute)
 
         # Store condition result
         step.outputs = {"condition_result": condition_result}
@@ -471,7 +529,14 @@ class WorkflowManager:
         self, transaction: WorkflowTransaction, step: AdvancedWorkflowStep
     ):
         """Execute steps in parallel"""
-        # Create tasks for all parallel steps
+        if not step.parallel_steps:
+            # No steps to execute in parallel
+            step.outputs = {"parallel_completed": True}
+            step.status = "completed"
+            step.end_time = datetime.now()
+            return
+
+        # Execute all parallel steps concurrently
         tasks = []
         for step_id in step.parallel_steps:
             if step_id in transaction.steps:
@@ -497,25 +562,91 @@ class WorkflowManager:
         """Execute a loop step"""
         # Get the collection to iterate over
         collection = self._resolve_value(transaction, step.loop_collection)
-        print(
-            f"[DEBUG] Loop step {step.step_id}: collection={collection} (type: {type(collection)})"
-        )
         if not isinstance(collection, (list, tuple)):
             raise WorkflowError(
                 f"Loop collection must be a list or tuple, got {type(collection)}"
             )
 
+        print(f"DEBUG - Loop {step.step_id}: executing {len(collection)} iterations")
+        print(f"DEBUG - Loop steps: {step.loop_steps}")
+
         loop_results = []
 
         # Execute loop steps for each item
-        for item in collection:
+        for i, item in enumerate(collection):
+            print(f"DEBUG - Loop iteration {i}: {step.loop_variable} = {item}")
+            
             # Set the loop variable in transaction context
             transaction.variables[step.loop_variable] = item
 
-            # Execute all steps in the loop
-            for step_id in step.loop_steps:
-                if step_id in transaction.steps:
-                    await self._execute_advanced_step(transaction, step_id)
+            # Execute all child steps in the loop in order, handling dependencies properly
+            if step.loop_steps:
+                print(f"DEBUG - Executing loop steps: {step.loop_steps}")
+                # Build dependency graph for loop steps
+                dependency_graph = {}
+                for step_id in step.loop_steps:
+                    if step_id in transaction.steps:
+                        loop_step = transaction.steps[step_id]
+                        dependency_graph[step_id] = loop_step.dependencies.copy()
+                
+                # Execute loop steps in dependency order
+                executed_steps = set()
+                top_level_executed = set()
+                while len(top_level_executed) < len(step.loop_steps):
+                    # Find steps that can be executed (all dependencies satisfied)
+                    ready_steps = [
+                        step_id
+                        for step_id in step.loop_steps
+                        if step_id not in top_level_executed
+                        and all(dep in executed_steps for dep in dependency_graph.get(step_id, []))
+                    ]
+                    
+                    if not ready_steps:
+                        # Circular dependency or missing step
+                        remaining = set(step.loop_steps) - top_level_executed
+                        raise WorkflowError(
+                            f"Circular dependency or missing step in loop: {remaining}"
+                        )
+                    
+                    print(f"DEBUG - Loop ready steps: {ready_steps}")
+                    
+                    # Execute ready steps concurrently
+                    tasks = []
+                    for step_id in ready_steps:
+                        task = asyncio.create_task(
+                            self._execute_advanced_step(transaction, step_id)
+                        )
+                        tasks.append(task)
+                    
+                    # Wait for all ready steps to complete
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    
+                    # Check for failures and mark steps as completed
+                    for step_id, result in zip(ready_steps, results):
+                        if isinstance(result, Exception):
+                            loop_step = transaction.steps[step_id]
+                            loop_step.status = "failed"
+                            loop_step.error = str(result)
+                            loop_step.end_time = datetime.now()
+                            raise WorkflowError(f"Loop step {step_id} failed: {result}")
+                        
+                        executed_steps.add(step_id)
+                        top_level_executed.add(step_id)
+                        print(f"DEBUG - Completed loop step: {step_id}")
+                        
+                        # Also mark child steps as completed if this is a block step
+                        loop_step = transaction.steps[step_id]
+                        if loop_step.step_type == "parallel" and loop_step.parallel_steps:
+                            executed_steps.update(loop_step.parallel_steps)
+                            print(f"DEBUG - Marked parallel child steps as completed: {loop_step.parallel_steps}")
+                        elif loop_step.step_type == "condition":
+                            if loop_step.if_steps:
+                                executed_steps.update(loop_step.if_steps)
+                            if loop_step.else_steps:
+                                executed_steps.update(loop_step.else_steps)
+                            print(f"DEBUG - Marked condition child steps as completed: if={loop_step.if_steps}, else={loop_step.else_steps}")
+                
+                print(f"DEBUG - Completed all steps in loop iteration {i}")
 
             # Collect results
             loop_results.append({"item": item, "completed": True})
@@ -537,6 +668,8 @@ class WorkflowManager:
         if not condition:
             return False
 
+        print(f"DEBUG - Evaluating condition: {condition}")
+
         # Check if this is a step reference (e.g., "validate.success")
         if "." in condition and not condition.startswith("$"):
             # This looks like a step reference, try to resolve it
@@ -544,13 +677,16 @@ class WorkflowManager:
                 resolved_condition = self._resolve_dependency_reference(
                     transaction, f"${condition}"
                 )
+                print(f"DEBUG - Resolved condition reference: {condition} -> {resolved_condition}")
                 return bool(resolved_condition)
-            except (WorkflowError, KeyError):
+            except (WorkflowError, KeyError) as e:
+                print(f"DEBUG - Failed to resolve condition reference: {condition} -> {e}")
                 # If resolution fails, treat as a regular condition
                 pass
 
         # Replace step references with their outputs
         resolved_condition = self._resolve_value(transaction, condition)
+        print(f"DEBUG - Resolved condition value: {condition} -> {resolved_condition}")
 
         # Simple boolean evaluation
         if isinstance(resolved_condition, bool):
@@ -647,13 +783,21 @@ class WorkflowManager:
         # Remove the leading '$'
         ref_path = reference[1:]
 
-        # Split by dots to get step and field
+        # Find the longest matching step ID that exists in the transaction
         parts = ref_path.split(".")
-        if len(parts) < 2:
-            raise WorkflowError(f"Invalid dependency reference: {reference}")
-
-        step_id = parts[0]
-        field_path = ".".join(parts[1:])
+        step_id = None
+        field_path = None
+        
+        # Try to find the longest matching step ID
+        for i in range(len(parts) - 1, 0, -1):
+            candidate_step_id = ".".join(parts[:i])
+            if candidate_step_id in transaction.steps:
+                step_id = candidate_step_id
+                field_path = ".".join(parts[i:])
+                break
+        
+        if not step_id:
+            raise WorkflowError(f"Referenced step not found in reference: {reference}")
 
         # Get the step
         step = transaction.steps.get(step_id)
